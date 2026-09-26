@@ -1,194 +1,158 @@
 /**
- * App.tsx — Root React component (Phase 4)
+ * App.tsx
  *
- * New in Phase 4:
- *   - Subscribes to indexingState — knows when the page is ready
- *   - Button reflects current status (idle → analyzing → ready → error)
- *   - Stores sessionId from the shared state (needed for /api/chat in Phase 5)
- *   - Panel shows page title and status message
+ * Root component mounted by content.tsx into the Shadow DOM.
  *
- * Phase 5 will replace the placeholder panel with the full chat UI.
- * The sessionId stored here will be passed into the chat components.
+ * Responsibilities:
+ *  - Show the floating "✨ Ask AI" button
+ *  - Track whether the chat panel is open or closed
+ *  - Reflect the indexing status on the button (analyzing / ready / error)
+ *  - Render <ChatPanel> when the panel is open
+ *
+ * The button ↔ panel toggle is intentionally simple.
+ * All chat logic lives inside ChatPanel.
  */
 
 import React, { useState, useEffect } from 'react';
-import { indexingState, IndexingState } from './store/indexingState';
+import ChatPanel from './components/ChatPanel';
+import { indexingState } from './store/indexingState';
+import type { PageStatus } from './types/index';
 
+// ─── Styles for the floating button ──────────────────────────
+const BUTTON_STYLES = `
+  @keyframes ragButtonPop {
+    0%   { transform: scale(0.5); opacity: 0; }
+    70%  { transform: scale(1.05); }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes ragButtonPulse {
+    0%, 100% { box-shadow: 0 4px 20px rgba(99,102,241,0.4); }
+    50%       { box-shadow: 0 4px 28px rgba(99,102,241,0.65); }
+  }
+
+  .rag-fab {
+    animation: ragButtonPop 0.35s cubic-bezier(0.16,1,0.3,1) forwards;
+  }
+  .rag-fab-ready {
+    animation: ragButtonPulse 2.5s ease-in-out infinite;
+  }
+  .rag-fab:hover {
+    transform: scale(1.06) !important;
+  }
+  .rag-fab:active {
+    transform: scale(0.96) !important;
+  }
+`;
+
+// ─── Button appearance varies by indexing status ──────────────
+interface ButtonConfig {
+  label: string;
+  background: string;
+  disabled: boolean;
+  title: string;
+}
+
+function getButtonConfig(status: PageStatus, isOpen: boolean): ButtonConfig {
+  if (isOpen) {
+    return {
+      label: '✕ Close',
+      background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+      disabled: false,
+      title: 'Close assistant',
+    };
+  }
+  switch (status) {
+    case 'indexing':
+      return {
+        label: '⏳ Analyzing…',
+        background: 'linear-gradient(135deg, #9ca3af, #6b7280)',
+        disabled: true,
+        title: 'Analyzing page content, please wait…',
+      };
+    case 'ready':
+      return {
+        label: '✨ Ask AI',
+        background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+        disabled: false,
+        title: 'Open Page Assistant',
+      };
+    case 'error':
+      return {
+        label: '⚠️ Retry',
+        background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+        disabled: false,
+        title: 'An error occurred. Click to retry.',
+      };
+    default: // 'idle'
+      return {
+        label: '✨ Ask AI',
+        background: 'linear-gradient(135deg, #9ca3af, #6b7280)',
+        disabled: true,
+        title: 'Loading…',
+      };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// APP
+// ─────────────────────────────────────────────────────────────
 const App: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const [state, setState] = useState<IndexingState>(indexingState.getState());
+  const [pageState, setPageState] = useState(indexingState.getState());
 
-  // Subscribe to indexing state changes from content.tsx
+  // Subscribe to indexing state changes
   useEffect(() => {
-    const unsubscribe = indexingState.subscribe(newState => {
-      setState(newState);
-    });
-    return unsubscribe; // Cleanup subscription on unmount
+    return indexingState.subscribe(setPageState);
   }, []);
 
-  // Derived values for the UI
-  const isReady    = state.status === 'ready';
-  const isIndexing = state.status === 'indexing' || state.status === 'idle';
-  const isError    = state.status === 'error';
+  // When indexing finishes successfully, keep the button alive
+  // (do NOT auto-open — the user decides when to chat)
+  const btnConfig = getButtonConfig(pageState.status, isOpen);
 
-  const buttonLabel = isReady
-    ? '✨ Ask AI'
-    : isError
-    ? '⚠️ Error'
-    : '⏳ Analyzing...';
-
-  const buttonColor = isError
-    ? '#ef4444'   // red
-    : isReady
-    ? 'linear-gradient(135deg, #6366f1, #8b5cf6)'  // indigo/purple
-    : '#94a3b8';  // grey (loading)
+  const handleButtonClick = () => {
+    if (btnConfig.disabled) return;
+    setIsOpen((prev) => !prev);
+  };
 
   return (
     <>
-      {/* ── Floating button ─────────────────────────────── */}
+      <style>{BUTTON_STYLES}</style>
+
+      {/* ── Floating Action Button ─────────────────────────── */}
       <button
-        onClick={() => setIsOpen(prev => !prev)}
-        disabled={isIndexing}
+        className={`rag-fab ${pageState.status === 'ready' && !isOpen ? 'rag-fab-ready' : ''}`}
+        onClick={handleButtonClick}
+        disabled={btnConfig.disabled}
+        title={btnConfig.title}
         style={{
           position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          zIndex: 2147483647,
-          pointerEvents: 'auto',
-          background: buttonColor,
+          bottom: 24,
+          right: 20,
+          height: 48,
+          padding: '0 20px',
+          background: btnConfig.background,
           color: '#fff',
           border: 'none',
-          borderRadius: '50px',
-          padding: '12px 20px',
-          fontSize: '14px',
-          fontWeight: '600',
-          cursor: isIndexing ? 'wait' : 'pointer',
-          boxShadow: isReady
-            ? '0 4px 24px rgba(99, 102, 241, 0.45)'
-            : '0 4px 16px rgba(0,0,0,0.15)',
+          borderRadius: 24,
+          cursor: btnConfig.disabled ? 'not-allowed' : 'pointer',
+          fontSize: 14,
+          fontWeight: 600,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
           display: 'flex',
           alignItems: 'center',
-          gap: '8px',
-          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          transition: 'all 0.3s ease',
+          gap: 6,
+          zIndex: 2147483647,
+          transition: 'transform 0.15s, box-shadow 0.15s',
           userSelect: 'none',
           whiteSpace: 'nowrap',
-          opacity: isIndexing ? 0.85 : 1,
+          letterSpacing: '0.01em',
         }}
       >
-        {buttonLabel}
+        {btnConfig.label}
       </button>
 
-      {/* ── Status / placeholder panel ───────────────────── */}
-      {isOpen && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: '80px',
-            right: '24px',
-            width: '360px',
-            background: '#fff',
-            borderRadius: '16px',
-            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.15)',
-            overflow: 'hidden',
-            zIndex: 2147483646,
-            pointerEvents: 'auto',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-          }}
-        >
-          {/* Panel header */}
-          <div style={{
-            padding: '16px 20px',
-            borderBottom: '1px solid #e2e8f0',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}>
-            <div>
-              <div style={{ fontWeight: '700', color: '#1e293b', fontSize: '15px' }}>
-                RAG Chatbot
-              </div>
-              <div style={{
-                fontSize: '12px',
-                color: '#64748b',
-                marginTop: '2px',
-                maxWidth: '260px',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {state.pageTitle || window.location.hostname}
-              </div>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: '#94a3b8',
-                fontSize: '18px',
-                lineHeight: 1,
-                padding: '4px',
-              }}
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Status body */}
-          <div style={{ padding: '24px 20px' }}>
-            {isIndexing && (
-              <div style={{ textAlign: 'center' }}>
-                <div style={{
-                  width: '40px', height: '40px',
-                  border: '3px solid #e2e8f0',
-                  borderTop: '3px solid #6366f1',
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                  margin: '0 auto 16px',
-                }} />
-                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-                <p style={{ color: '#475569', fontSize: '14px' }}>
-                  {state.message || 'Reading page content...'}
-                </p>
-                <p style={{ color: '#94a3b8', fontSize: '12px', marginTop: '8px' }}>
-                  This takes a few seconds on first load
-                </p>
-              </div>
-            )}
-
-            {isReady && (
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '32px', marginBottom: '12px' }}>✅</div>
-                <p style={{ color: '#1e293b', fontWeight: '600', fontSize: '15px' }}>
-                  Page analyzed!
-                </p>
-                <p style={{ color: '#64748b', fontSize: '13px', marginTop: '6px' }}>
-                  {state.message}
-                </p>
-                <p style={{ color: '#94a3b8', fontSize: '12px', marginTop: '16px' }}>
-                  Full chat UI coming in Phase 5
-                </p>
-              </div>
-            )}
-
-            {isError && (
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️</div>
-                <p style={{ color: '#ef4444', fontWeight: '600', fontSize: '14px' }}>
-                  {state.message}
-                </p>
-                {state.message.includes('backend') && (
-                  <p style={{ color: '#94a3b8', fontSize: '12px', marginTop: '8px' }}>
-                    Run: uvicorn app.main:app --reload
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* ── Chat Panel (rendered when open) ───────────────── */}
+      {isOpen && <ChatPanel onClose={() => setIsOpen(false)} />}
     </>
   );
 };

@@ -54,7 +54,6 @@ function injectChatbot(): void {
       height: 0 !important;
       overflow: visible !important;
       z-index: 2147483647 !important;
-      pointer-events: none !important;
       margin: 0 !important;
       padding: 0 !important;
       border: none !important;
@@ -67,10 +66,6 @@ function injectChatbot(): void {
       visibility: visible !important;
       display: block !important;
       float: none !important;
-      max-width: none !important;
-      max-height: none !important;
-      min-width: 0 !important;
-      min-height: 0 !important;
     }
   `;
   (document.head || document.documentElement).appendChild(pageStyle);
@@ -92,13 +87,11 @@ function injectChatbot(): void {
       top: 0; left: 0;
       width: 0; height: 0;
       overflow: visible;
-      pointer-events: none;
     }
     #rag-chatbot-app {
       display: block;
       width: 0; height: 0;
       overflow: visible;
-      pointer-events: none;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       line-height: 1.5;

@@ -1,0 +1,25 @@
+# --- Web Framework ---
+fastapi
+uvicorn[standard]
+
+# --- Configuration ---
+pydantic
+pydantic-settings
+
+# --- LangChain (RAG pipeline) ---
+langchain
+langchain-community
+langchain-huggingface
+
+# --- Embeddings ---
+sentence-transformers
+torch
+
+# --- Vector Database ---
+chromadb
+
+# --- LLM & Utilities ---
+google-generativeai
+python-dotenv
+python-multipart
+httpx

@@ -1,0 +1,35 @@
+/**
+ * globals.css — Base styles for the chatbot UI
+ *
+ * Important: These styles live inside a Shadow DOM, which means
+ * they are completely isolated from the webpage's own CSS.
+ * No conflicts. No leaking. The extension styles cannot break
+ * the webpage, and the webpage styles cannot break the extension.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:host {
+  /* CSS custom properties (variables) — easy to theme later */
+  --rag-primary: #6366f1;         /* Indigo — main brand color */
+  --rag-primary-dark: #4f46e5;
+  --rag-bg: #ffffff;
+  --rag-bg-secondary: #f8fafc;
+  --rag-text: #1e293b;
+  --rag-text-muted: #64748b;
+  --rag-border: #e2e8f0;
+  --rag-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  --rag-radius: 16px;
+  --rag-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  
+  font-family: var(--rag-font);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--rag-text);
+}

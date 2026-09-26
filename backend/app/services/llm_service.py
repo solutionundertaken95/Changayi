@@ -93,7 +93,7 @@ def _get_model() -> genai.GenerativeModel:
         ),
     )
 
-    logger.info("Gemini model initialized: gemini-1.5-flash")
+    logger.info("Gemini model initialized: gemini-3.7-flash")
     return model
 
 
@@ -190,4 +190,68 @@ def generate_answer(context_chunks: list[str], question: str) -> str:
 
     except Exception as e:
         logger.error(f"Gemini API error: {e}", exc_info=True)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Streaming generate function — called by chat_stream endpoint (Phase 8)
+# ---------------------------------------------------------------------------
+
+from typing import Generator
+
+
+def generate_answer_stream(
+    context_chunks: list[str],
+    question: str,
+) -> Generator[str, None, None]:
+    """
+    Streams the Gemini response chunk-by-chunk rather than waiting for
+    the full answer.
+
+    --- WHY STREAMING? ---
+
+    The standard generate_answer() blocks until Gemini finishes the
+    complete response (can be 2-5 seconds). With streaming:
+      - Gemini sends each word/sentence as soon as it's ready
+      - The backend forwards each chunk via SSE (Server-Sent Events)
+      - The React UI appends each chunk to the message bubble in real-time
+      - The user reads the answer as it appears, like a human typing
+
+    --- HOW GEMINI STREAMING WORKS ---
+
+    model.generate_content(prompt, stream=True) returns an iterable.
+    Each iteration yields a response chunk with a .text attribute.
+    We simply yield each non-empty .text to our caller.
+
+    Args:
+        context_chunks: Retrieved text chunks from ChromaDB (same as generate_answer)
+        question:       The user's question
+
+    Yields:
+        String text chunks from Gemini as they arrive (word or sentence fragments)
+
+    Raises:
+        ValueError: If API key is missing
+        Exception:  If Gemini API call fails
+    """
+    model = _get_model()
+    prompt = _build_rag_prompt(context_chunks, question)
+
+    logger.info(
+        f"Starting Gemini stream | "
+        f"chunks={len(context_chunks)} | "
+        f"question='{question[:60]}...'"
+    )
+
+    try:
+        response = model.generate_content(prompt, stream=True)
+
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+
+        logger.info("Gemini stream completed successfully")
+
+    except Exception as e:
+        logger.error(f"Gemini streaming error: {e}", exc_info=True)
         raise

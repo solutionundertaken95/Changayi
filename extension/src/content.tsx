@@ -1,60 +1,60 @@
 /**
- * content.tsx — Chrome Extension Content Script
+ * content.tsx — Chrome Extension Content Script (Phase 4)
  *
- * ISOLATION STRATEGY (why each choice was made):
+ * What this script does now:
+ *   1. Injects the React chatbot UI into every webpage (Phase 1)
+ *   2. Extracts the page's readable text (Phase 4 — NEW)
+ *   3. Sends it to the FastAPI backend for indexing (Phase 4 — NEW)
+ *   4. Updates shared state so the React UI knows when it's ready (Phase 4 — NEW)
  *
- * Problem: our injected <div> lives inside the page's DOM and inherits
- * the page's CSS rules. This causes misalignment on sites that use
- * flex/grid on body, transforms, CSS resets, etc.
+ * Execution order (important for UX):
+ *   ┌─────────────────────────────────────────────┐
+ *   │ Page loads                                  │
+ *   │   ↓                                         │
+ *   │ Mount React app  ← IMMEDIATE (button shows) │
+ *   │   ↓                                         │
+ *   │ Extract page text (fast, DOM read)           │
+ *   │   ↓                                         │
+ *   │ POST /api/page/index (async, ~2-5 seconds)  │
+ *   │   ↓                                         │
+ *   │ indexingState → 'ready'                     │
+ *   │   ↓                                         │
+ *   │ React re-renders: button activates          │
+ *   └─────────────────────────────────────────────┘
  *
- * Fix — three layers:
- *
- * Layer 1: Inject a <style> tag into the page's <head> targeting our host by ID.
- *   Why a <style> tag instead of element.style.cssText?
- *   → element.style.cssText does NOT reliably support !important in JavaScript.
- *     Browsers strip !important from programmatically set inline styles.
- *     A <style> tag in the document IS a real stylesheet and !important works.
- *
- * Layer 2: Append host to document.documentElement (the <html> tag), not body.
- *   Why not body?
- *   → If body has `transform`, `perspective`, or `filter`, position:fixed elements
- *     inside it are positioned relative to body, not the viewport.
- *     The <html> element almost never has these transforms.
- *
- * Layer 3: Shadow DOM inside the host.
- *   → Isolates all internal CSS from the page. Page styles can't reach inside.
- *     Internal styles can't leak out to the page.
+ * The user sees the button immediately. While the backend processes the page,
+ * the button shows a subtle "analyzing" state. When it's ready, the button
+ * lights up and the user can start asking questions.
  */
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { extractPageContent } from './utils/extractor';
+import { generateSessionId } from './utils/session';
+import { indexingState } from './store/indexingState';
+import { indexPage } from './services/api';
+
+// ---------------------------------------------------------------------------
+// DOM injection (same isolation strategy from the bug fix)
+// ---------------------------------------------------------------------------
 
 function injectChatbot(): void {
   if (document.getElementById('rag-chatbot-host')) return;
 
-  // ── Layer 1: Inject page-level stylesheet for the host element ────────
-  // This is a real stylesheet — !important here genuinely wins over
-  // any page CSS that targets div, *, or even our #rag-chatbot-host id.
+  // Inject page-level stylesheet for the host element
   const pageStyle = document.createElement('style');
   pageStyle.id = 'rag-chatbot-host-style';
   pageStyle.textContent = `
     #rag-chatbot-host {
-      /* Remove from layout entirely */
       position: fixed !important;
       top: 0 !important;
       left: 0 !important;
       width: 0 !important;
       height: 0 !important;
       overflow: visible !important;
-
-      /* Always on top */
       z-index: 2147483647 !important;
-
-      /* Don't block page interactions */
       pointer-events: none !important;
-
-      /* Reset everything that could be inherited or set by page CSS */
       margin: 0 !important;
       padding: 0 !important;
       border: none !important;
@@ -67,52 +67,36 @@ function injectChatbot(): void {
       visibility: visible !important;
       display: block !important;
       float: none !important;
-      clear: none !important;
-      vertical-align: baseline !important;
       max-width: none !important;
       max-height: none !important;
       min-width: 0 !important;
       min-height: 0 !important;
     }
   `;
-  // Append to <head> if available, otherwise to <html>
   (document.head || document.documentElement).appendChild(pageStyle);
 
-  // ── Layer 2: Host element appended to <html>, not <body> ──────────────
-  // Appending to documentElement avoids body transforms (common in SPAs).
+  // Append to <html>, not <body> (avoids body transform issues)
   const host = document.createElement('div');
   host.id = 'rag-chatbot-host';
   document.documentElement.appendChild(host);
 
-  // ── Layer 3: Shadow DOM ───────────────────────────────────────────────
   const shadowRoot = host.attachShadow({ mode: 'open' });
 
-  // Reset CSS inside the shadow root — protects against any inheritance
-  // that leaks through the shadow boundary (e.g. font, color, line-height)
   const shadowStyle = document.createElement('style');
   shadowStyle.textContent = `
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :host {
       all: initial;
       display: block;
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 0;
-      height: 0;
+      top: 0; left: 0;
+      width: 0; height: 0;
       overflow: visible;
       pointer-events: none;
     }
-
     #rag-chatbot-app {
       display: block;
-      width: 0;
-      height: 0;
+      width: 0; height: 0;
       overflow: visible;
       pointer-events: none;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -123,19 +107,102 @@ function injectChatbot(): void {
   `;
   shadowRoot.appendChild(shadowStyle);
 
-  // ── Mount React ───────────────────────────────────────────────────────
   const container = document.createElement('div');
   container.id = 'rag-chatbot-app';
   shadowRoot.appendChild(container);
 
+  // ── Step 1: Mount React immediately ─────────────────────────────────
+  // The button appears right away — the user doesn't wait for indexing.
   ReactDOM.createRoot(container).render(
     <React.StrictMode>
       <App />
     </React.StrictMode>
   );
+
+  // ── Step 2: Index the page in the background ─────────────────────────
+  // We don't await this — it runs concurrently with the mounted React app.
+  indexCurrentPage();
 }
 
-// Run after DOM is ready
+// ---------------------------------------------------------------------------
+// Page indexing pipeline
+// ---------------------------------------------------------------------------
+
+async function indexCurrentPage(): Promise<void> {
+  const sessionId = generateSessionId();
+
+  try {
+    // Signal: extraction starting
+    indexingState.update({
+      status: 'indexing',
+      sessionId,
+      message: 'Reading page content...',
+      pageTitle: document.title,
+    });
+
+    // Extract text from the live DOM
+    const extracted = extractPageContent();
+
+    if (extracted.wordCount < 30) {
+      // Page has almost no readable content (maybe a login page, blank page, etc.)
+      indexingState.update({
+        status: 'error',
+        sessionId,
+        message: 'Not enough content on this page to analyze.',
+        pageTitle: extracted.title,
+      });
+      return;
+    }
+
+    // Signal: sending to backend
+    indexingState.update({
+      status: 'indexing',
+      sessionId,
+      message: `Analyzing ${extracted.wordCount.toLocaleString()} words...`,
+      pageTitle: extracted.title,
+    });
+
+    // POST to FastAPI → clean → chunk → embed → store in ChromaDB
+    const result = await indexPage({
+      session_id: sessionId,
+      url: extracted.url,
+      title: extracted.title,
+      content: extracted.text,
+    });
+
+    if (result.success) {
+      indexingState.update({
+        status: 'ready',
+        sessionId,
+        message: `Ready — ${result.chunks_created} sections indexed`,
+        pageTitle: extracted.title,
+      });
+    } else {
+      throw new Error(result.message || 'Indexing failed');
+    }
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[RAG Chatbot] Indexing error:', message);
+
+    // Check if it's a connection error (backend not running)
+    const isConnectionError = message.includes('fetch') || message.includes('network') || message.includes('Failed to fetch');
+
+    indexingState.update({
+      status: 'error',
+      sessionId,
+      message: isConnectionError
+        ? 'Cannot connect to backend. Is the Python server running?'
+        : `Error: ${message}`,
+      pageTitle: document.title,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', injectChatbot);
 } else {

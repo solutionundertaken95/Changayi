@@ -1,15 +1,13 @@
 """
 main.py — FastAPI application entry point.
 
-Updated in Phase 2: added the page indexing routes.
+Phase 3 update: added the /api/chat route.
 
-How data flows:
-  Chrome Extension → POST /api/page/index → page.py → rag_service.py
-                                                        ├── cleaner.py
-                                                        ├── chunker.py
-                                                        └── vector_store.py (ChromaDB)
-
-  Chrome Extension → POST /api/chat → chat.py (Phase 3) → rag_service.py → Gemini
+Full API surface:
+  GET  /api/health        → confirm backend is running
+  POST /api/page/index    → index a webpage (clean → chunk → embed → store)
+  POST /api/page/search   → test retrieval (dev only)
+  POST /api/chat          → ask a question (retrieve → prompt → Gemini → answer)
 """
 
 import logging
@@ -18,12 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health
 from app.api.routes import page
+from app.api.routes import chat
 
 # ---------------------------------------------------------------------------
-# Logging setup
+# Logging
 # ---------------------------------------------------------------------------
-# This makes all our logger.info() / logger.error() calls visible in the
-# terminal when you run the backend. Very helpful during development.
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,13 +29,13 @@ logging.basicConfig(
 )
 
 # ---------------------------------------------------------------------------
-# App creation
+# App
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="RAG Chatbot API",
     description="Chrome Extension RAG Chatbot — Backend API",
-    version="0.2.0",   # Phase 2
+    version="0.3.0",   # Phase 3
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -61,8 +58,7 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(page.router,   prefix="/api", tags=["Page Indexing"])
-# Phase 3 will add: app.include_router(chat.router, prefix="/api", tags=["Chat"])
-
+app.include_router(chat.router,   prefix="/api", tags=["Chat"])
 
 # ---------------------------------------------------------------------------
 # Root
@@ -72,11 +68,12 @@ app.include_router(page.router,   prefix="/api", tags=["Page Indexing"])
 async def root():
     return {
         "message": "RAG Chatbot API is running",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "docs": "/docs",
         "endpoints": {
-            "health":      "GET  /api/health",
-            "index_page":  "POST /api/page/index",
-            "search_page": "POST /api/page/search",
+            "health":       "GET  /api/health",
+            "index_page":   "POST /api/page/index",
+            "search_page":  "POST /api/page/search",
+            "chat":         "POST /api/chat",
         },
     }

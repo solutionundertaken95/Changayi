@@ -43,7 +43,7 @@ const App: React.FC = () => {
           transition: 'transform 0.2s, box-shadow 0.2s',
         }}
       >
-        ✨ Ask AI
+        ✨ Scene Inda?
       </button>
 
       {/* Placeholder panel — Phase 5 will replace this with the full UI */}

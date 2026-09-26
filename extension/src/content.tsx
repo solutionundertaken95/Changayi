@@ -121,7 +121,13 @@ function injectChatbot(): void {
 // Page indexing pipeline
 // ---------------------------------------------------------------------------
 
+// Guards against concurrent indexing (e.g., rapid SPA navigations)
+let isIndexing = false;
+
 async function indexCurrentPage(): Promise<void> {
+  if (isIndexing) return;
+  isIndexing = true;
+
   const sessionId = generateSessionId();
 
   try {
@@ -189,8 +195,62 @@ async function indexCurrentPage(): Promise<void> {
         : `Error: ${message}`,
       pageTitle: document.title,
     });
+  } finally {
+    isIndexing = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// SPA Navigation Detection
+// ---------------------------------------------------------------------------
+//
+// The Problem:
+//   Single-Page Applications (GitHub, YouTube, Medium, Twitter/X) change the
+//   URL via JavaScript — history.pushState() — WITHOUT reloading the page.
+//   Chrome only runs content scripts on actual page loads, so our script would
+//   keep answering questions about the OLD page even after the user navigates.
+//
+// The Fix:
+//   We intercept the three ways a URL can change without a page reload:
+//     1. history.pushState()    — SPA "click a link" navigation
+//     2. history.replaceState() — SPA "update URL without history entry"
+//     3. popstate event         — Browser back/forward buttons
+//
+// When a URL change is detected:
+//   - Wait 600ms for the new page's DOM to settle
+//   - Re-run the indexing pipeline for the new URL
+
+let currentUrl = window.location.href;
+
+function handleUrlChange(): void {
+  const newUrl = window.location.href;
+  if (newUrl === currentUrl) return; // Hash-only or duplicate — ignore
+  currentUrl = newUrl;
+
+  console.log('[RAG Chatbot] URL changed → re-indexing:', newUrl);
+
+  // Small delay so the SPA can render the new page's DOM
+  setTimeout(() => {
+    indexCurrentPage();
+  }, 600);
+}
+
+// Intercept pushState (most SPA navigation)
+const _origPushState = history.pushState.bind(history);
+history.pushState = function (...args: Parameters<typeof history.pushState>) {
+  _origPushState(...args);
+  handleUrlChange();
+};
+
+// Intercept replaceState (e.g. YouTube updates URL as video plays)
+const _origReplaceState = history.replaceState.bind(history);
+history.replaceState = function (...args: Parameters<typeof history.replaceState>) {
+  _origReplaceState(...args);
+  handleUrlChange();
+};
+
+// Back/Forward browser buttons
+window.addEventListener('popstate', handleUrlChange);
 
 // ---------------------------------------------------------------------------
 // Run

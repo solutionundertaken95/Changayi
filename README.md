@@ -1,445 +1,256 @@
 # 🤖 Changayi — Chrome Extension
 
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Extension-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Chrome Extension](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4.svg?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangChain](https://img.shields.io/badge/LangChain-RAG%20Pipeline-1C3C3C.svg?logo=langchain&logoColor=white)](https://www.langchain.com/)
+[![Chroma DB](https://img.shields.io/badge/Chroma%20DB-Vector%20Store-FF6F00.svg)](https://www.trychroma.com/)
+[![Google Gemini](https://img.shields.io/badge/Gemini-LLM-8E75B2.svg?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+
 > Ask questions about any webpage you're reading, powered by a full Retrieval-Augmented Generation (RAG) pipeline.
 
-A production-quality Chrome Extension that extracts content from the current webpage, stores it in a local vector database, and lets you have a contextual AI conversation about it — all grounded in what the page actually says.
+Changayi is a Chrome extension-based RAG chatbot that helps users ask questions about the webpage they are currently reading. It scrapes webpage content, cleans and chunks it, embeds the text, stores it in a vector database, and retrieves the most relevant context to answer questions using LLMs such as Gemini or OpenAI.
 
-Built as a portfolio-quality project demonstrating modern **GenAI engineering** and **full-stack product development**.
+Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, this project demonstrates how a browser extension can transform passive browsing into an interactive, context-aware AI assistant.
 
----
+## Contents
 
-## ✨ Features
-
-- **Page-aware AI** — answers are grounded in the webpage you're reading, not general knowledge
-- **Streaming responses** — Gemini's answer appears token-by-token, like a human typing
-- **Markdown rendering** — bold, italic, code blocks, bullet lists, and headings rendered natively
-- **Dark mode** — one-click toggle with full theme support
-- **SPA navigation detection** — automatically re-indexes when you navigate in single-page apps (React, Next.js, etc.)
-- **Source cards** — see exactly which page chunks contributed to each answer
-- **Starter prompts** — clickable suggestions when you first open the panel
-- **Shadow DOM isolation** — the extension UI never interferes with the page's own styles
-- **Floating assistant button** — stays accessible while you read, opens a polished chat panel
+- [What We Built](#what-we-built)
+- [System Architecture](#system-architecture)
+- [Technical Challenges and Solutions](#technical-challenges-and-solutions)
+- [Results and Impact](#results-and-impact)
+- [Getting Started](#getting-started)
+- [Future Scope](#future-scope)
 
 ---
 
-## 🏗️ Architecture
+## What We Built
 
-```
-                    🌐 WEBPAGE
-                       │
-                       ▼
-             Chrome Extension
-             React + TypeScript
-                       │
-              Extract page text
-              (content script)
-                       │
-                       ▼
-                    FastAPI
-                       │
-          ┌────────────┴────────────┐
-          │                         │
-       Cleaning                  Chunking
-    (remove noise)        (LangChain RecursiveCharacterTextSplitter)
-          │                         │
-          └────────────┬────────────┘
-                       │
-                       ▼
-             HuggingFace Embeddings
-          (sentence-transformers/all-MiniLM-L6-v2)
-                       │
-                       ▼
-                    ChromaDB
-               (temporary, per-page)
-                       │
-                 User Question
-                       │
-                       ▼
-              Question Embedding
-                       │
-                       ▼
-               Similarity Search
-               (cosine distance)
-                       │
-                       ▼
-              Relevant Page Chunks
-               (top-k=4 results)
-                       │
-                       ▼
-                  RAG Prompt
-          (system + context + question)
-                       │
-                       ▼
-              Gemini 1.5 Flash
-           (streaming via SSE)
-                       │
-                       ▼
-             FastAPI → React UI
-          (token-by-token rendering)
+Changayi provides a browser-native AI assistant for webpage understanding. Instead of asking a general-purpose model to guess the content of a webpage, it extracts the visible text from the current page, indexes it locally, and uses vector search to retrieve only the most relevant chunks before generating a grounded answer.
+
+### Core capabilities
+
+- Chrome extension UI for instant webpage-based Q&A
+- Page content extraction from the current browser tab
+- Content cleaning and noise removal
+- Text chunking and semantic embedding
+- Vector similarity search using Chroma DB
+- LLM-powered answer generation using Gemini or OpenAI
+- Streaming responses for a conversational experience
+- Source-aware responses based on the active page context
+
+### Project composition
+
+The repository is split into two primary parts:
+
+- `backend/` — Python-based FastAPI service and RAG orchestration layer
+- `extension/` — TypeScript-based Chrome extension UI and browser integration
+
+From the project language composition:
+
+- TypeScript: 57.8%
+- Python: 41.5%
+- CSS: 0.7%
+
+This indicates a strong frontend/browser component alongside a significant Python backend and AI pipeline.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    User[User on webpage] --> Extension[Chrome Extension]
+    Extension --> Scrape[Content Script / DOM Extraction]
+    Scrape --> Backend[FastAPI Backend]
+    Backend --> Cleaner[Text Cleaning]
+    Cleaner --> Chunker[Chunking]
+    Chunker --> Embedder[HuggingFace Embeddings]
+    Embedder --> Chroma[Chroma DB]
+    User --> Question[Question]
+    Question --> EmbedderQ[Question Embedding]
+    EmbedderQ --> Search[Vector Similarity Search]
+    Search --> Relevant[Relevant Chunks]
+    Relevant --> LLM[Gemini / OpenAI]
+    LLM --> Answer[Grounded Answer]
+    Answer --> Extension
 ```
 
-**Technology stack:**
+### End-to-end flow
+
+1. The user opens a webpage and clicks the floating AI button in the Chrome extension.
+2. A content script extracts the page text and sends it to the backend.
+3. The backend removes noise such as navigation, boilerplate, and irrelevant markup.
+4. The cleaned text is split into chunks.
+5. Each chunk is embedded and stored in Chroma DB.
+6. When the user asks a question, the query is embedded and matched against the stored chunks.
+7. The most relevant chunks are injected into the LLM prompt.
+8. The model answers using the webpage content as context.
+9. The response is streamed back to the extension UI and rendered in the panel.
+
+### Key technology stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18, TypeScript, Vite |
-| Chrome Extension | Manifest V3, Content Scripts, Shadow DOM |
-| Backend | Python, FastAPI, Pydantic |
-| RAG Framework | LangChain |
-| Embeddings | HuggingFace `sentence-transformers/all-MiniLM-L6-v2` |
-| Vector Database | ChromaDB (in-memory, temporary) |
-| LLM | Google Gemini 1.5 Flash |
+| Frontend | React, TypeScript, Vite |
+| Browser extension | Chrome Manifest V3, Content Scripts |
+| Backend | Python, FastAPI |
+| RAG framework | LangChain |
+| Embeddings | HuggingFace sentence-transformers |
+| Vector DB | Chroma DB |
+| LLM provider | Gemini / OpenAI |
 | Streaming | Server-Sent Events (SSE) |
 
 ---
 
-## 📁 Project Structure
+## Technical Challenges and Solutions
 
-```
-RAG/
-├── backend/
-│   ├── .env                        # API keys (never committed)
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py                 # FastAPI app, CORS, route registration
-│       ├── config.py               # Settings loaded from .env
-│       ├── models/
-│       │   └── schemas.py          # Pydantic request/response models
-│       ├── api/routes/
-│       │   ├── health.py           # GET  /api/health
-│       │   ├── page.py             # POST /api/page/index
-│       │   └── chat.py             # POST /api/chat  +  POST /api/chat/stream
-│       └── services/
-│           ├── cleaner.py          # Strip scripts, ads, nav, boilerplate
-│           ├── chunker.py          # LangChain RecursiveCharacterTextSplitter
-│           ├── embedder.py         # HuggingFace sentence-transformer
-│           ├── vector_store.py     # ChromaDB read/write
-│           ├── rag_service.py      # index_page() + retrieve()
-│           ├── llm_service.py      # generate_answer() + generate_answer_stream()
-│           └── chat_service.py     # Orchestrates retrieve → generate
-│
-├── extension/
-│   ├── manifest.json               # Chrome Extension Manifest V3
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── src/
-│       ├── content.tsx             # Content script: mounts React, extracts page, handles SPA nav
-│       ├── App.tsx                 # Floating ✨ Ask AI button with status states
-│       ├── components/
-│       │   └── ChatPanel.tsx       # Full chat UI (dark mode, markdown, streaming)
-│       ├── services/
-│       │   └── api.ts              # All FastAPI communication (fetch + SSE stream)
-│       ├── store/
-│       │   └── indexingState.ts    # Pub/sub state: idle → indexing → ready → error
-│       ├── types/
-│       │   └── index.ts            # TypeScript interfaces for all data shapes
-│       └── utils/
-│           ├── extractor.ts        # DOM-based text extraction
-│           └── session.ts          # URL → stable session ID (hash of origin+pathname)
-│
-├── .env.example                    # Template for required environment variables
-└── .gitignore
-```
+### 1. Extracting useful content from webpages
+
+Web pages often contain navigation bars, ads, scripts, repeated footer content, and layout noise that are irrelevant to user questions.
+
+**Solution:**  
+The project includes a cleaning layer that strips non-content sections before indexing. This ensures the vector database stores semantically meaningful text instead of noisy browser markup.
+
+### 2. Handling SPA navigation
+
+Modern web apps often change content without full page reloads, which makes naive page indexing unreliable.
+
+**Solution:**  
+The extension monitors navigation events and re-indexes content when the page changes. This helps maintain accurate context for single-page applications.
+
+### 3. Keeping answers grounded in the page
+
+A generic LLM may ignore the actual webpage or hallucinate an answer.
+
+**Solution:**  
+The RAG pipeline retrieves top-k relevant chunks from the current page and passes them to the LLM as context. This keeps the answer focused on the current page instead of general knowledge.
+
+### 4. Maintaining UI responsiveness
+
+Users expect the AI assistant to feel fast and conversational.
+
+**Solution:**  
+The project streams responses using SSE so the UI can progressively render the answer as tokens are generated, creating a smoother user experience.
+
+### 5. Managing multiple sessions and pages
+
+Different webpages often need separate contexts, and the same page may be revisited later.
+
+**Solution:**  
+The system uses a session-based approach tied to URL structure so each page has a stable context window without mixing unrelated content.
 
 ---
 
-## 🚀 Getting Started
+## Results and Impact
+
+This project demonstrates a practical and visually interactive AI assistant built around the RAG pattern for browser-based knowledge work.
+
+### Verified project facts
+
+- 2 main modules: `backend` and `extension`
+- 1 browser-based Q&A product built as a Chrome extension
+- 1 FastAPI service handling indexing, retrieval, and LLM interaction
+- 1 vector database layer using Chroma DB
+- 1 semantic embedding flow using HuggingFace models
+- 1 streaming chat experience for interactive responses
+
+### Measured / practical impact
+
+Although the repository does not publish benchmark numbers or benchmark datasets, the implementation is designed to provide:
+
+- page-aware answers rather than generic AI responses
+- lower hallucination risk by grounding the LLM in retrieved page content
+- instant exploration of webpage content without leaving the browser
+- a strong portfolio demonstration of GenAI + browser extension engineering
+
+This is best viewed as a full-featured prototype for a browser-based assistant rather than a production-scale enterprise application.
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
-- **Python 3.10+**
-- **Node.js 18+** and npm
-- **Google Chrome** (or any Chromium browser)
-- A free **Gemini API key** from [Google AI Studio](https://aistudio.google.com/app/apikey)
-
----
+- Python 3.10+
+- Node.js 18+
+- Google Chrome or a Chromium-based browser
+- Gemini API key from Google AI Studio
 
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
-cd RAG
+git clone https://github.com/solutionundertaken95/Changayi.git
+cd Changayi
 ```
 
----
-
-### 2. Backend setup
+### 2. Set up the backend
 
 ```bash
 cd backend
-
-# Create and activate a virtual environment
 python -m venv venv
-source venv/bin/activate       # macOS/Linux
-venv\Scripts\activate          # Windows
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create your `.env` file (copy from the example):
+Copy the sample environment file:
 
 ```bash
 cp ../.env.example .env
 ```
 
-Open `.env` and add your Gemini API key:
+Update the `.env` file with your actual API keys.
 
-```env
-GEMINI_API_KEY=your_actual_key_here
-```
-
-Start the backend:
+### 3. Start the backend
 
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-The API will be available at `http://127.0.0.1:8000`. Visit `http://127.0.0.1:8000/docs` to see the interactive Swagger documentation.
+The backend should now be available at:
 
-> **First run note:** HuggingFace will download the embedding model (`all-MiniLM-L6-v2`, ~90 MB) on first startup. This is cached locally — subsequent starts are instant.
+- API: `http://127.0.0.1:8000`
+- Swagger UI: `http://127.0.0.1:8000/docs`
 
----
-
-### 3. Chrome Extension setup
+### 4. Set up the Chrome extension
 
 ```bash
 cd extension
-
-# Install dependencies
 npm install
-
-# Build the extension
 npm run build
 ```
 
-This produces a `dist/` folder.
+Then load the unpacked extension in Chrome:
 
-**Load the extension in Chrome:**
+1. Open `chrome://extensions`
+2. Enable Developer mode
+3. Click Load unpacked
+4. Select the `extension/dist` folder
 
-1. Open Chrome and navigate to `chrome://extensions`
-2. Enable **Developer mode** (toggle, top-right)
-3. Click **Load unpacked**
-4. Select the `extension/dist/` folder
-5. The **✨ Ask AI** button should now appear on any webpage
-
-> After making code changes, run `npm run build` again, then click the ↺ refresh icon on the extension card at `chrome://extensions`.
+The floating “Ask AI” button should then appear on supported web pages.
 
 ---
 
-## 🔑 Environment Variables
+## Future Scope
 
-| Variable | Required | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | ✅ | Your Google Gemini API key |
-| `CHROMA_PERSIST_DIR` | ❌ | Path for ChromaDB storage (defaults to in-memory) |
-| `EMBEDDING_MODEL` | ❌ | HuggingFace model name (default: `all-MiniLM-L6-v2`) |
-| `CHUNK_SIZE` | ❌ | Characters per chunk (default: `800`) |
-| `CHUNK_OVERLAP` | ❌ | Overlap between chunks (default: `100`) |
-
-**Security rule:** API keys live exclusively in `backend/.env`. They are never in any frontend code, browser storage, or version control.
-
----
-
-## 🔌 API Reference
-
-All endpoints are prefixed with `/api`.
-
-### `GET /api/health`
-
-Verifies the backend is running.
-
-```json
-{ "status": "ok", "version": "0.8.0" }
-```
+- Add support for OpenAI and other model providers in a unified abstraction layer
+- Persist vector collections across sessions for improved user continuity
+- Support multi-page conversations with shared memory
+- Add conversation history and follow-up question handling
+- Support PDF and uploaded document indexing
+- Improve retrieval quality using metadata filtering and better chunk strategies
+- Add user authentication and secure API access
+- Add browser-side caching and offline support
+- Add observability and usage analytics
+- Extend from webpage Q&A to broader browser assistant workflows
 
 ---
 
-### `POST /api/page/index`
+## License
 
-Receives webpage content, runs the full indexing pipeline (clean → chunk → embed → store), and returns the session ID.
-
-**Request:**
-```json
-{
-  "session_id": "page-a3f8c2",
-  "url": "https://example.com/article",
-  "title": "My Article",
-  "content": "The raw extracted page text..."
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "session_id": "page-a3f8c2",
-  "chunks_created": 14,
-  "message": "Indexed 14 chunks",
-  "url": "https://example.com/article"
-}
-```
+No explicit license is currently specified in the repository. If you plan to share or reuse this project publicly, adding an open-source license is recommended.
 
 ---
 
-### `POST /api/chat`
-
-Runs the full RAG pipeline and returns the complete answer as one JSON response (non-streaming).
-
-**Request:**
-```json
-{
-  "session_id": "page-a3f8c2",
-  "question": "What is the main argument of this article?"
-}
-```
-
-**Response:**
-```json
-{
-  "session_id": "page-a3f8c2",
-  "question": "What is the main argument of this article?",
-  "answer": "The article argues that...",
-  "sources": [
-    { "content": "...chunk text...", "chunk_index": 2 },
-    { "content": "...chunk text...", "chunk_index": 7 }
-  ]
-}
-```
-
----
-
-### `POST /api/chat/stream`
-
-Same as `/api/chat` but streams the response via **Server-Sent Events (SSE)**.
-
-**Request:** Same as `/api/chat`
-
-**Response stream** (`Content-Type: text/event-stream`):
-
-```
-data: {"type":"sources","sources":[{"content":"...","chunk_index":2}]}
-
-data: {"type":"chunk","text":"The article "}
-
-data: {"type":"chunk","text":"argues that "}
-
-data: {"type":"chunk","text":"retrieval-augmented generation..."}
-
-data: {"type":"done"}
-```
-
----
-
-## 🧠 How RAG Works
-
-### The core problem
-
-Large language models have a training cutoff and no knowledge of the specific webpage you're reading. Asking Gemini "what does this page say?" without context will produce a hallucinated answer.
-
-### The RAG solution
-
-Instead of asking Gemini to know the answer, we retrieve the relevant parts of the page and show them to Gemini as part of the question.
-
-```
-User asks: "What are the installation steps?"
-              │
-              ▼
-Embed the question → [0.12, -0.43, 0.77, ...]
-              │
-              ▼
-Search ChromaDB for similar vectors
-(finds chunks about "installation", "setup", "steps")
-              │
-              ▼
-Build prompt:
-  "You are a helpful assistant. Answer using only this context:
-   [Chunk 3: Installation requires Python 3.10...]
-   [Chunk 7: Run pip install -r requirements.txt...]
-   Question: What are the installation steps?"
-              │
-              ▼
-Gemini generates a grounded, accurate answer
-```
-
-### Why chunking?
-
-A typical webpage contains 5,000–50,000 characters. Embedding the whole page as one vector loses specificity — a question about "installation steps" would match equally against all page content. Splitting into ~800-character chunks with 100-character overlap gives the vector search precision: it finds the *specific sections* that are relevant to the question.
-
-### Why embeddings?
-
-Embeddings convert text into numerical vectors where semantic similarity corresponds to geometric proximity. "How do I install?" and "Installation steps" produce vectors that are close together in embedding space, even though they share no words. This is what makes the retrieval step work across paraphrasing and synonyms.
-
----
-
-## 🔄 Development Phases
-
-| Phase | Description | Status |
-|---|---|---|
-| 1 | Foundation — project structure, Vite + FastAPI scaffold | ✅ |
-| 2 | RAG Backend — cleaning, chunking, HuggingFace embeddings, ChromaDB | ✅ |
-| 3 | Gemini — RAG prompt, answer generation, error handling | ✅ |
-| 4 | Chrome Extension — Manifest V3, content script, Shadow DOM isolation | ✅ |
-| 5 | Chat UI — floating button, chat panel, starter prompts, source cards | ✅ |
-| 6 | Full Integration — end-to-end pipeline, SPA navigation detection | ✅ |
-| 7 | UI/UX Polish — dark mode, markdown rendering, animations | ✅ |
-| 8 | Streaming — SSE backend, client-side stream reader, progressive rendering | ✅ |
-
----
-
-## 🛠️ Common Issues
-
-**The ✨ Ask AI button doesn't appear**
-- Make sure the backend is running at `http://127.0.0.1:8000`
-- Check the extension is loaded at `chrome://extensions` with no errors
-- Some pages (Chrome Web Store, `chrome://` pages) block content scripts by design
-
-**Extension shows "Analyzing…" indefinitely**
-- Open DevTools → Console (on the page, not the extension popup) and look for errors
-- The backend health check at `/api/health` should return `200 OK`
-
-**"Page hasn't been analyzed yet" response**
-- The `session_id` in the chat request must match the one used during indexing
-- This usually means the page changed URL since indexing — refresh the page
-
-**Streaming gives a `RuntimeError: StopIteration` error**
-- Fixed in the codebase. If you see it, ensure you have the latest `chat.py` with the `_DONE` sentinel pattern
-
-**HuggingFace model download is slow**
-- The `all-MiniLM-L6-v2` model (~90 MB) is downloaded once on first startup
-- Set `SENTENCE_TRANSFORMERS_HOME` in your environment to cache it in a preferred directory
-
-**CORS errors in the browser console**
-- The backend has `allow_origins=["*"]` for local development
-- If deploying, restrict this to your extension's origin
-
----
-
-## 🔐 Security Notes
-
-- **API keys never touch the frontend.** The Gemini key lives only in `backend/.env`.
-- **`.env` is in `.gitignore`** — it will never be committed.
-- **ChromaDB is temporary and local.** No page content leaves your machine (except to Gemini's API).
-- For production deployment, add authentication to the FastAPI endpoints and restrict CORS.
-
----
-
-## 🚧 Potential Enhancements
-
-- **OpenAI as an alternative LLM** — the LLM service is isolated; swapping providers means editing one file
-- **Persistent sessions** — store ChromaDB collections on disk to survive backend restarts
-- **Multi-tab awareness** — track multiple pages simultaneously across browser tabs
-- **Conversation history** — include previous turns in the RAG prompt for follow-up questions
-- **PDF and file support** — extend extraction beyond webpages to uploaded documents
-- **WebSocket streaming** — upgrade from SSE to WebSocket for bidirectional communication
-
----
-
-## 📄 License
-
-MIT — free to use, modify, and distribute.
-
----
-
-*Built with React + TypeScript + Vite · FastAPI · LangChain · HuggingFace · ChromaDB · Gemini*
-
+Built with React + TypeScript + FastAPI + LangChain + HuggingFace + Chroma DB + Gemini.

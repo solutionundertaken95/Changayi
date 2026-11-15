@@ -10,11 +10,14 @@
 [![Hybrid Search](https://img.shields.io/badge/Search-Hybrid%20%2B%20BM25-7E57C2.svg)]()
 [![Reranker](https://img.shields.io/badge/Rerank-Cross--Encoder-FF7043.svg)]()
 
+
 > Ask questions about any webpage you're reading, powered by a full Retrieval-Augmented Generation (RAG) pipeline.
 
 Changayi (Friend) is a Chrome extension-based RAG chatbot that helps users ask questions about the webpage they are currently reading. It scrapes webpage content, cleans it, splits it with **semantic + structure-aware chunking**, embeds the text, stores it in a vector database, and answers questions using a **hybrid retrieval pipeline** (dense vectors + BM25 keyword search + cross-encoder reranking) with LLMs such as Gemini or OpenAI.
 
 Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, this project demonstrates how a browser extension can transform passive browsing into an interactive, context-aware AI assistant.
+
+---
 
 ## Contents
 
@@ -32,6 +35,8 @@ Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, 
 ## What We Built
 
 Changayi provides a browser-native AI assistant for webpage understanding. Instead of asking a general-purpose model to guess the content of a webpage, it extracts the visible text from the current page, indexes it locally, and uses vector search to retrieve only the most relevant chunks before generating a grounded answer.
+
+---
 
 ### Core capabilities
 
@@ -72,6 +77,8 @@ flowchart TD
     Answer --> Extension
 ```
 
+---
+
 ### End-to-end flow
 
 1. The user opens a webpage and clicks the floating AI button in the Chrome extension.
@@ -83,6 +90,8 @@ flowchart TD
 7. A cross-encoder reranker scores each candidate against the question, and only the top chunks are injected into the LLM prompt.
 8. The model answers using the webpage content as context.
 9. The response is streamed back to the extension UI and rendered in the panel.
+
+---
 
 ### Key technology stack
 
@@ -125,7 +134,7 @@ The backend log for the same interaction — showing the RAG pipeline doing its 
 
 ---
 
-### 1. Technical Challenges Faced 
+### Technical Challenges Faced 
 
 
 1. Extracting useful content from webpages
@@ -169,13 +178,18 @@ The system uses a session-based approach tied to URL structure so each page has 
 
 The retrieval pipeline was benchmarked with a labeled evaluation harness (`scripts/eval_rag.py`): 10 queries with known gold sentences over a multi-section document, where a retrieved chunk counts as relevant if it contains the gold sentence. Metrics: Recall@4, MRR@4, nDCG@4, Precision@4, and retrieval latency, run identically against both the old and new pipeline.
 
+---
+
 ### Pipeline comparison
 
 | Stage          | Before                              | After                                                                                                                                           |
 | -------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Chunking       | Fixed 500-char windows with overlap | **Semantic + structure-aware**: heading hierarchy detection, breadcrumb context prefixes, sentence-embedding similarity gating (threshold 0.55) |
 | Retrieval      | Dense vector search only, top-4     | **Hybrid**: dense + BM25 keyword search, fused with Reciprocal Rank Fusion (`rrf_k=60`)                                                         |
-| Post-retrieval | None                                | **Cross-encoder reranker** (`ms-marco-MiniLM-L-6-v2`) scoring (query, chunk) pairs jointly, 8 candidates → top-4                                |
+| Post-retrieval | None                                | **Cross-encoder reranker** (`ms-marco-MiniLM-L-6-v2`) scoring (query, chunk) pairs jointly, 8 candidates → top-4   
+
+
+---                             |
 
 ### Measured metrics
 
@@ -188,12 +202,17 @@ The retrieval pipeline was benchmarked with a labeled evaluation harness (`scrip
 | Retrieval latency | ~75 ms/query       | ~1365 ms/query (CPU, incl. reranking) |
 | Chunks created    | 7 (avg ~430 chars) | 12 (avg ~220 chars, topic-coherent)   |
 
+---
+
+
 ### Interpretation
 
 - **On a small benchmark corpus, retrieval quality is a parity result.** With only ~12 chunks in scope, dense-only retrieval is already near-solved; the gains from hybrid fusion and reranking emerge at real scale (hundreds of chunks per page/site).
 - **The reranker's decisiveness is the qualitative win.** On the query "What is an LSTM?", the cross-encoder scored the gold chunk **+8.27** vs **−10.0 / −10.8** for irrelevant chunks — a ~19-point separation that bi-encoder cosine similarity (all candidates within ~0.02 of each other) cannot produce. This is what protects answer quality on distractor-heavy real pages.
 - **Hybrid search closes the exact-token gap.** Dense embeddings blur acronyms, product names, and error codes; BM25 catches them, and RRF rewards chunks that rank high in _both_ rankings.
 - **The latency cost is a known trade-off**, dominated by cross-encoder forward passes on CPU. Tunable via `config.py`: `rerank_candidates` (8 → 4–5), skipping reranking for tiny collections (<30 chunks), or running the reranker on GPU/ONNX.
+
+---
 
 ### Where the new pipeline wins
 
@@ -294,5 +313,5 @@ The floating “Ask AI” button should then appear on supported web pages.
 
 No explicit license is currently specified in the repository. If you plan to share or reuse this project publicly, adding an open-source license is recommended.
 
----
+
 

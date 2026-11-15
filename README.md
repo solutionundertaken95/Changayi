@@ -12,7 +12,7 @@
 
 > Ask questions about any webpage you're reading, powered by a full Retrieval-Augmented Generation (RAG) pipeline.
 
-Changayi is a Chrome extension-based RAG chatbot that helps users ask questions about the webpage they are currently reading. It scrapes webpage content, cleans it, splits it with **semantic + structure-aware chunking**, embeds the text, stores it in a vector database, and answers questions using a **hybrid retrieval pipeline** (dense vectors + BM25 keyword search + cross-encoder reranking) with LLMs such as Gemini or OpenAI.
+Changayi (Friend) is a Chrome extension-based RAG chatbot that helps users ask questions about the webpage they are currently reading. It scrapes webpage content, cleans it, splits it with **semantic + structure-aware chunking**, embeds the text, stores it in a vector database, and answers questions using a **hybrid retrieval pipeline** (dense vectors + BM25 keyword search + cross-encoder reranking) with LLMs such as Gemini or OpenAI.
 
 Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, this project demonstrates how a browser extension can transform passive browsing into an interactive, context-aware AI assistant.
 
@@ -21,7 +21,7 @@ Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, 
 - [What We Built](#what-we-built)
 - [System Architecture](#system-architecture)
 - [Actual Output](#actual-output)
-- [Technical Challenges and Solutions](#technical-challenges-and-solutions)
+- [Technical Challenges Faced](#technical-challenges-faced)
 - [Evaluation & Retrieval Performance](#evaluation--retrieval-performance)
 - [Results and Impact](#results-and-impact)
 - [Getting Started](#getting-started)
@@ -47,20 +47,6 @@ Changayi provides a browser-native AI assistant for webpage understanding. Inste
 - Streaming responses for a conversational experience
 - Source-aware responses based on the active page context
 
-### Project composition
-
-The repository is split into two primary parts:
-
-- `backend/` — Python-based FastAPI service and RAG orchestration layer
-- `extension/` — TypeScript-based Chrome extension UI and browser integration
-
-From the project language composition:
-
-- TypeScript: 57.8%
-- Python: 41.5%
-- CSS: 0.7%
-
-This indicates a strong frontend/browser component alongside a significant Python backend and AI pipeline.
 
 ---
 
@@ -139,35 +125,38 @@ The backend log for the same interaction — showing the RAG pipeline doing its 
 
 ---
 
-### 1. Extracting useful content from webpages
+### 1. Technical Challenges Faced 
+
+
+1. Extracting useful content from webpages
 
 Web pages often contain navigation bars, ads, scripts, repeated footer content, and layout noise that are irrelevant to user questions.
 
 **Solution:**  
 The project includes a cleaning layer that strips non-content sections before indexing. This ensures the vector database stores semantically meaningful text instead of noisy browser markup.
 
-### 2. Handling SPA navigation
+2. Handling SPA navigation
 
 Modern web apps often change content without full page reloads, which makes naive page indexing unreliable.
 
 **Solution:**  
 The extension monitors navigation events and re-indexes content when the page changes. This helps maintain accurate context for single-page applications.
 
-### 3. Keeping answers grounded in the page
+3. Keeping answers grounded in the page
 
 A generic LLM may ignore the actual webpage or hallucinate an answer.
 
 **Solution:**  
 The RAG pipeline retrieves top-k relevant chunks from the current page and passes them to the LLM as context. This keeps the answer focused on the current page instead of general knowledge.
 
-### 4. Maintaining UI responsiveness
+4. Maintaining UI responsiveness
 
 Users expect the AI assistant to feel fast and conversational.
 
 **Solution:**  
 The project streams responses using SSE so the UI can progressively render the answer as tokens are generated, creating a smoother user experience.
 
-### 5. Managing multiple sessions and pages
+5. Managing multiple sessions and pages
 
 Different webpages often need separate contexts, and the same page may be revisited later.
 
@@ -219,26 +208,6 @@ Recommended follow-up: rerun the benchmark against full-length scraped pages (20
 ## Results and Impact
 
 This project demonstrates a practical and visually interactive AI assistant built around the RAG pattern for browser-based knowledge work.
-
-### Verified project facts
-
-- 2 main modules: `backend` and `extension`
-- 1 browser-based Q&A product built as a Chrome extension
-- 1 FastAPI service handling indexing, retrieval, and LLM interaction
-- 1 vector database layer using Chroma DB
-- 1 semantic embedding flow using HuggingFace models
-- 1 streaming chat experience for interactive responses
-
-### Measured / practical impact
-
-The retrieval pipeline upgrade is benchmark-backed (see [Evaluation & Retrieval Performance](#evaluation--retrieval-performance)). Beyond the numbers, the implementation provides:
-
-- page-aware answers rather than generic AI responses
-- lower hallucination risk by grounding the LLM in retrieved page content
-- instant exploration of webpage content without leaving the browser
-- a strong portfolio demonstration of GenAI + browser extension engineering
-
-This is best viewed as a full-featured prototype for a browser-based assistant rather than a production-scale enterprise application.
 
 ---
 
@@ -307,7 +276,6 @@ The floating “Ask AI” button should then appear on supported web pages.
 
 ## Future Scope
 
-- Add support for OpenAI and other model providers in a unified abstraction layer
 - Persist vector collections across sessions for improved user continuity
 - Support multi-page conversations with shared memory
 - Add conversation history and follow-up question handling
@@ -328,4 +296,3 @@ No explicit license is currently specified in the repository. If you plan to sha
 
 ---
 
-Built with React + TypeScript + FastAPI + LangChain + HuggingFace + Chroma DB + BM25 + Cross-Encoder Reranking + Gemini.

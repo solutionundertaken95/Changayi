@@ -85,7 +85,7 @@ def _get_model() -> genai.GenerativeModel:
     genai.configure(api_key=settings.gemini_api_key)
 
     model = genai.GenerativeModel(
-        model_name="gemini-3.7-flash",   # Fast, capable, generous free tier
+        model_name="gemini-3.6-flash",   # Fast, capable, generous free tier
         generation_config=genai.GenerationConfig(
             temperature=0.1,             # Low = factual, consistent answers
             max_output_tokens=1024,      # Enough for a thorough answer
@@ -93,7 +93,7 @@ def _get_model() -> genai.GenerativeModel:
         ),
     )
 
-    logger.info("Gemini model initialized: gemini-3.7-flash")
+    logger.info("Gemini model initialized: gemini-3.6-flash")
     return model
 
 

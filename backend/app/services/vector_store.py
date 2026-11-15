@@ -1,49 +1,54 @@
 """
-vector_store.py — ChromaDB integration for storing and retrieving page chunks.
+vector_store.py — ChromaDB + Hybrid Search (dense vectors + BM25 keywords).
 
---- WHAT IS A VECTOR DATABASE? ---
+--- WHY HYBRID SEARCH? ---
 
-  A regular database stores text, numbers, dates.
-  To find something, you match exact values: WHERE name = 'Alice'.
+  Dense (vector) search finds chunks by MEANING. It's great at
+  "How do cars work?" → "Engines combust fuel". But it's weak at
+  EXACT tokens: acronyms, product names, code, error messages,
+  rare words. An embedding can blur "LSTM" into "neural network".
 
-  A vector database stores embedding vectors alongside the text.
-  To find something, you search by MEANING:
-    "Find the chunks most similar to this question's embedding."
+  BM25 is a keyword search algorithm (like the scoring engine behind
+  classic search engines). It matches exact terms, rewarding chunks
+  that contain the query's rare words. It's the perfect complement
+  to vector search.
 
-  Under the hood, ChromaDB computes the cosine similarity between
-  the query vector and every stored chunk vector, then returns
-  the top-k closest matches. This is called ANN (Approximate
-  Nearest Neighbor) search.
+  Hybrid search = run BOTH, then merge the two rankings with
+  Reciprocal Rank Fusion (RRF):
 
---- COSINE SIMILARITY ---
+      RRF_score(chunk) = Σ  1 / (rrf_k + rank_i)
 
-  Imagine two arrows pointing from the origin in 384-dimensional space.
-  Cosine similarity measures the angle between the arrows:
-    - Angle = 0°  → cosine = 1.0 → identical meaning
-    - Angle = 90° → cosine = 0.0 → unrelated meaning
-    - Angle = 180°→ cosine = -1.0 → opposite meaning
+  where rank_i is the chunk's position in each result list. A chunk
+  that ranks high in BOTH lists gets a big boost; a chunk that's
+  only high in one list still survives. rrf_k=60 (standard) softens
+  the advantage of rank #1 vs rank #5.
 
---- PER-SESSION COLLECTIONS ---
+--- HOW IT WORKS HERE ---
 
-  The user might open the chatbot on Wikipedia, ask questions,
-  then switch to a news article and ask more questions.
-
-  We CANNOT mix the chunks from those two pages — the answers would
-  be nonsense ("According to the Wikipedia article... [but the user
-  asked about the news article]").
-
-  Solution: each page gets its own ChromaDB "collection" named by
-  session_id. When a user visits a new page, we clear the old
-  collection and create a fresh one.
+  Dense vectors live in ChromaDB (as before). The BM25 index is
+  rebuilt in-memory from the same chunks whenever we search —
+  for a single-page session (a few hundred chunks) this is fast
+  and avoids persisting a second index.
 """
 
 import logging
+import re
+
+import chromadb
 from langchain_community.vectorstores import Chroma
+from rank_bm25 import BM25Okapi
 
 from app.services.embedder import get_embeddings
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase word tokens for BM25. Keeps acronyms/numbers intact."""
+    return _TOKEN_RE.findall(text.lower())
 
 
 def _collection_name(session_id: str) -> str:
@@ -51,12 +56,14 @@ def _collection_name(session_id: str) -> str:
     ChromaDB collection names must be 3-63 chars, alphanumeric + hyphens.
     We sanitize the session_id to meet these requirements.
     """
-    # Replace any non-alphanumeric chars with hyphens
     safe = "".join(c if c.isalnum() else "-" for c in session_id)
-    # Ensure it starts with a letter (ChromaDB requirement)
     if safe[0].isdigit():
         safe = "s-" + safe
-    return safe[:63]   # Max 63 chars
+    return safe[:63]
+
+
+def _client() -> "chromadb.api.ClientAPI":
+    return chromadb.PersistentClient(path=settings.chroma_persist_dir)
 
 
 def store_chunks(session_id: str, chunks: list[str]) -> int:
@@ -78,17 +85,11 @@ def store_chunks(session_id: str, chunks: list[str]) -> int:
     # Delete existing collection for this session (clean slate)
     _delete_collection(collection)
 
-    # Add metadata to each chunk so we can reference them later
-    # metadatas[i] corresponds to chunks[i]
     metadatas = [
         {"chunk_index": i, "session_id": session_id}
         for i in range(len(chunks))
     ]
 
-    # Chroma.from_texts() does three things in one call:
-    #   1. Embeds all the chunks using our HuggingFace model
-    #   2. Creates a ChromaDB collection
-    #   3. Stores chunks + embeddings + metadata together
     Chroma.from_texts(
         texts=chunks,
         embedding=get_embeddings(),
@@ -101,47 +102,114 @@ def store_chunks(session_id: str, chunks: list[str]) -> int:
     return len(chunks)
 
 
+def _dense_search(vectorstore: Chroma, query: str, k: int) -> list[tuple[str, dict]]:
+    """Dense (semantic) search: returns (content, metadata) pairs."""
+    docs = vectorstore.similarity_search(query=query, k=k)
+    return [(doc.page_content, doc.metadata) for doc in docs]
+
+
+def _bm25_search(all_chunks: list[tuple[str, dict]], query: str, k: int) -> list[tuple[str, dict]]:
+    """Keyword (BM25) search over the session's chunks, in-memory."""
+    if not all_chunks:
+        return []
+
+    corpus = [_tokenize(content) for content, _ in all_chunks]
+    if not any(corpus):
+        return []
+
+    bm25 = BM25Okapi(corpus)
+    scores = bm25.get_scores(_tokenize(query))
+
+    # Rank by score, keep only positive scores
+    ranked = sorted(
+        zip(scores, range(len(all_chunks))),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    return [
+        (all_chunks[idx][0], all_chunks[idx][1])
+        for score, idx in ranked[:k]
+        if score > 0
+    ]
+
+
+def _reciprocal_rank_fusion(
+    *ranked_lists: list[tuple[str, dict]],
+    rrf_k: int = 60,
+) -> list[tuple[str, dict]]:
+    """
+    Merges multiple ranked result lists into one using RRF.
+
+    score(doc) = Σ 1 / (rrf_k + rank)  over every list it appears in.
+    Ties (same content) accumulate scores from both lists — that's
+    the point: agreement between dense and keyword search is signal.
+    """
+    scores: dict[str, float] = {}
+    content_meta: dict[str, dict] = {}
+
+    for ranked in ranked_lists:
+        for rank, (content, meta) in enumerate(ranked):
+            key = content
+            scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            if key not in content_meta:
+                content_meta[key] = meta
+
+    fused = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return [(content, content_meta[content]) for content, _ in fused]
+
+
+def _get_all_chunks(collection: str) -> list[tuple[str, dict]]:
+    """Fetches every chunk (content + metadata) from the collection."""
+    client = _client()
+    col = client.get_or_create_collection(name=collection)
+    data = col.get(include=["documents", "metadatas"])
+    return list(zip(data["documents"], data["metadatas"]))
+
+
 def search_chunks(session_id: str, query: str, k: int = 4) -> list[dict]:
     """
-    Finds the k most semantically similar chunks to the query.
-
-    Process:
-      1. Embed the query using the same model used for indexing
-      2. Compute cosine similarity between query embedding and all chunk embeddings
-      3. Return the top-k chunks
+    Hybrid retrieval: dense vector search + BM25 keyword search,
+    fused with Reciprocal Rank Fusion.
 
     Args:
         session_id: Must match the session_id used in store_chunks()
         query:      The user's question
-        k:          How many chunks to retrieve (default 4)
+        k:          How many fused candidates to return (before reranking)
 
     Returns:
-        List of dicts with keys: 'content', 'chunk_index'
+        List of dicts with keys: 'content', 'chunk_index', 'score'
     """
     collection = _collection_name(session_id)
-
-    # Load the existing collection (it was stored in store_chunks)
     vectorstore = Chroma(
         collection_name=collection,
         embedding_function=get_embeddings(),
         persist_directory=settings.chroma_persist_dir,
     )
 
-    # similarity_search returns LangChain Document objects
-    # Each Document has: .page_content (the chunk text), .metadata (our dict)
-    docs = vectorstore.similarity_search(query=query, k=k)
+    # 1. Dense search — semantic meaning
+    dense = _dense_search(vectorstore, query, k=settings.fetch_k)
+
+    # 2. BM25 search — exact keyword matching
+    all_chunks = _get_all_chunks(collection)
+    keyword = _bm25_search(all_chunks, query, k=settings.bm25_k)
+
+    # 3. Fuse the two rankings
+    fused = _reciprocal_rank_fusion(dense, keyword, rrf_k=settings.rrf_k)
+    top = fused[:k]
 
     results = [
         {
-            "content": doc.page_content,
-            "chunk_index": doc.metadata.get("chunk_index", -1),
+            "content": content,
+            "chunk_index": meta.get("chunk_index", -1),
+            "score": round(1.0 / (settings.rrf_k + rank + 1), 5),
         }
-        for doc in docs
+        for rank, (content, meta) in enumerate(top)
     ]
 
     logger.info(
-        f"Retrieved {len(results)} chunks for query '{query[:50]}...' "
-        f"from session '{session_id}'"
+        f"Hybrid search: dense={len(dense)} candidates, bm25={len(keyword)} "
+        f"candidates → {len(results)} fused chunks for query "
+        f"'{query[:50]}...' from session '{session_id}'"
     )
     return results
 
@@ -152,8 +220,7 @@ def _delete_collection(collection_name: str) -> None:
     Called before re-indexing a page to avoid stale data.
     """
     try:
-        import chromadb
-        client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
+        client = _client()
         client.delete_collection(name=collection_name)
         logger.info(f"Deleted existing collection: '{collection_name}'")
     except Exception:

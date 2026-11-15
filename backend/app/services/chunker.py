@@ -1,105 +1,227 @@
 """
-chunker.py — Splits cleaned webpage text into chunks for embedding.
+chunker.py — Semantic + Structure-aware chunking.
 
---- THE CORE CONCEPT ---
+--- THE OLD STRATEGY (what we replaced) ---
 
-Why do we split text into chunks?
+  RecursiveCharacterTextSplitter: split on character counts, trying
+  "\n\n", "\n", ". " etc. as fallback boundaries. It knows nothing
+  about what the text MEANS or where sections begin/end — it can
+  split a paragraph in half, or merge two unrelated sections.
 
-  Analogy: Imagine a library book with 500 pages. If you summarize
-  the entire book as ONE sentence, you lose all the detail. But if
-  you summarize it page-by-page, you can find exactly the right page
-  for any question.
+--- THE NEW STRATEGY ---
 
-  An embedding model does something similar: it compresses text into
-  a single vector (a list of numbers that represents meaning).
-  If you embed an entire 10,000-word webpage as one vector, the
-  resulting number represents an "average" of all the content — too
-  vague to retrieve specific information reliably.
+  1. STRUCTURE-AWARE SEGMENTATION
+     Web pages are not flat text. They have headings, lists, and
+     paragraphs. We first split the cleaned text into *sections*:
 
-  Chunks = specific, focused pieces of text.
-  Each chunk gets its OWN embedding → more precise retrieval.
+       - A heading line (e.g. "## History", "History", "1. Intro")
+         starts a new section; everything after it belongs to it.
+       - Each section gets a heading "breadcrumb" prefixed to its
+         chunks (e.g. "History > Post-war era\n\n...") so the
+         embedding captures the section's context, not just the
+         raw paragraph. This is critical: a chunk that says
+         "The war ended in 1945" is ambiguous without its heading.
 
---- KEY PARAMETERS ---
+  2. SEMANTIC CHUNKING
+     Within a section, we split into sentences and greedily build
+     chunks, but we only merge two sentences into the same chunk if
+     their embedding cosine similarity is above a threshold. If
+     sentence B drifts away from the running chunk's topic, we start
+     a new chunk — even if the current chunk is still small.
 
-chunk_size (default: 500 characters):
-  The maximum size of each chunk. Larger chunks = more context per
-  chunk, but less precise retrieval. Smaller = more precise, but
-  risks splitting mid-sentence.
+     This keeps chunks *topically coherent*, which is what makes
+     retrieval precise: a chunk about one topic has one clear
+     embedding, instead of a blurry average of two topics.
 
-  Characters, not words. 500 chars ≈ 80-100 words ≈ 3-5 sentences.
-
-chunk_overlap (default: 50 characters):
-  How many characters of the previous chunk are repeated at the start
-  of the next chunk.
-
-  Why overlap?
-  If a key fact spans the boundary between chunk 3 and chunk 4,
-  without overlap, that fact gets split and neither chunk has the
-  full context. With overlap, both chunks contain part of it —
-  retrieval is more robust.
-
-  Example (chunk_size=20, overlap=5):
-    Text:     "The quick brown fox jumps over the lazy dog"
-    Chunk 1:  "The quick brown fox "
-    Chunk 2:  " fox jumps over the "   ← starts 5 chars before chunk 1 ended
-    Chunk 3:  " the lazy dog"
-
---- WHY RecursiveCharacterTextSplitter? ---
-
-LangChain offers several splitters. This one is the most intelligent
-for general text because it tries to split on natural boundaries first:
-
-  Priority order:
-    1. Paragraph breaks ("\n\n")   ← best — full paragraph is coherent
-    2. Line breaks ("\n")
-    3. Sentence ends (". ")
-    4. Words (" ")
-    5. Characters                  ← worst — only if nothing else works
-
-  It only goes to the next level if the current chunk would exceed chunk_size.
+  3. SIZE GUARDRAILS
+     Semantic boundaries are still clamped to [min, max] characters
+     so we never get one-sentence chunks or page-sized chunks.
 """
 
 import logging
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import re
 
 from app.config import settings
+from app.services.embedder import embed_texts
 
 logger = logging.getLogger(__name__)
 
+# A line that looks like a heading: markdown headers, "1. Title",
+# "Title:", ALL-CAPS short lines, or short lines without ending punctuation.
+_HEADING_RE = re.compile(
+    r"^(#{1,6}\s+.+|"                 # markdown headers
+    r"\d+(\.\d+)*\.?\s+\S.*|"         # numbered sections "1. / 2.3"
+    r"[A-Z][^.!?]{0,80}:$|"           # "Some Title:"
+    r"[A-Z][A-Z0-9 ,&'\-]{2,60}$)"    # ALL CAPS LINE
+)
 
-def chunk_text(text: str, chunk_size: int | None = None, chunk_overlap: int | None = None) -> list[str]:
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+_LIST_ITEM_RE = re.compile(r"^(\s*[-*•\u2022]\s+|\s*\d+[.)]\s+)")
+
+
+def _is_heading(line: str) -> bool:
+    line = line.strip()
+    if not line or len(line) > 90:
+        return False
+    # A heading is short and does NOT end with sentence punctuation
+    # (the "Title:" variant above is the exception).
+    if _HEADING_RE.match(line):
+        return True
+    words = line.split()
+    return len(words) <= 8 and not line.endswith((".", "!", "?", ",", ";"))
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Splits a section body into sentences, keeping list items whole."""
+    sentences: list[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # List items are atomic — don't split them into sentences
+        if _LIST_ITEM_RE.match(line):
+            sentences.append(line)
+            continue
+        sentences.extend(s.strip() for s in _SENT_SPLIT_RE.split(line) if s.strip())
+    return sentences
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot  # vectors are L2-normalized by the embedder, so dot == cosine
+
+
+def _semantic_split(
+    sentences: list[str],
+    min_size: int,
+    max_size: int,
+    similarity_threshold: float,
+) -> list[str]:
     """
-    Splits cleaned text into a list of overlapping chunks.
+    Greedy semantic chunking inside one section.
+
+    For each new sentence, compare its embedding with the embedding of
+    the current chunk's *first* sentence (the anchor = the topic).
+    If similarity drops below the threshold → start a new chunk.
+    Otherwise append, until the chunk hits max_size.
+    """
+    if not sentences:
+        return []
+
+    vectors = embed_texts(sentences)
+
+    chunks: list[str] = []
+    current: list[str] = [sentences[0]]
+    current_len = len(sentences[0])
+    anchor_vec = vectors[0]
+
+    for sent, vec in zip(sentences[1:], vectors[1:]):
+        same_topic = _cosine(anchor_vec, vec) >= similarity_threshold
+        fits = current_len + 1 + len(sent) <= max_size
+
+        if same_topic and fits:
+            current.append(sent)
+            current_len += 1 + len(sent)
+        else:
+            # Flush the current chunk (if it's big enough) or keep it
+            # and try to merge with the next sentence first.
+            chunk_text = " ".join(current)
+            if current_len >= min_size or not same_topic:
+                chunks.append(chunk_text)
+                current = [sent]
+                current_len = len(sent)
+                anchor_vec = vec
+            else:
+                # Too small to flush, but the topic drifted: still flush
+                # to avoid stitching unrelated topics together.
+                chunks.append(chunk_text)
+                current = [sent]
+                current_len = len(sent)
+                anchor_vec = vec
+
+    if current:
+        chunks.append(" ".join(current))
+
+    # Merge any trailing chunk that is too small into its predecessor
+    if len(chunks) > 1 and len(chunks[-1]) < min_size:
+        chunks[-2] += " " + chunks.pop(-1)
+
+    return chunks
+
+
+def chunk_text(text: str, max_size: int | None = None) -> list[str]:
+    """
+    Splits cleaned text into structure-aware, semantically coherent chunks.
 
     Args:
-        text:          Cleaned page text from cleaner.py
-        chunk_size:    Max characters per chunk (defaults to settings.chunk_size)
-        chunk_overlap: Overlap characters between chunks (defaults to settings.chunk_overlap)
+        text:     Cleaned page text from cleaner.py
+        max_size: Max characters per chunk (defaults to settings.chunk_size)
 
     Returns:
-        List of text chunk strings, each ≤ chunk_size characters.
+        List of chunk strings. Each chunk is prefixed with the heading
+        breadcrumb of the section it belongs to.
     """
-    size    = chunk_size    or settings.chunk_size
-    overlap = chunk_overlap or settings.chunk_overlap
+    max_size = max_size or settings.chunk_size
+    min_size = max(60, max_size // 3)
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=size,
-        chunk_overlap=overlap,
-        # These separators are tried in order (most to least preferred)
-        separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""],
-        length_function=len,           # Measure by character count
-        is_separator_regex=False,      # Treat separators as literal strings
-    )
+    # --- 1. Segment into sections by heading ---
+    sections: list[tuple[list[str], str]] = []  # (heading_parts, body)
+    current_headings: list[str] = []
+    current_body: list[str] = []
 
-    chunks = splitter.split_text(text)
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if _is_heading(line):
+            if current_body:
+                sections.append((current_headings, "\n".join(current_body)))
+                current_body = []
+            # Keep the heading hierarchy shallow (last 2 levels)
+            current_headings = (current_headings + [line])[-2:]
+        else:
+            current_body.append(line)
 
-    # Filter out any chunks that are too short to be meaningful
-    # (e.g. a lone heading or a separator that became its own chunk)
-    chunks = [c.strip() for c in chunks if len(c.strip()) > 30]
+    if current_body:
+        sections.append((current_headings, "\n".join(current_body)))
+
+    # Fallback: no headings detected at all → treat whole page as one section
+    if not sections:
+        sections = [([], text)]
+
+    # --- 2. Semantic chunking within each section ---
+    chunks: list[str] = []
+    for headings, body in sections:
+        breadcrumb = " > ".join(headings[-2:])
+        sentences = _split_sentences(body)
+        if not sentences:
+            continue
+
+        # Very short sections (a heading + one sentence) are kept whole
+        if len(body) <= max_size:
+            section_chunks = [body]
+        else:
+            section_chunks = _semantic_split(
+                sentences,
+                min_size=min_size,
+                max_size=max_size,
+                similarity_threshold=settings.semantic_similarity_threshold,
+            )
+
+        for chunk in section_chunks:
+            chunk = chunk.strip()
+            if len(chunk) < 30:
+                continue
+            if breadcrumb:
+                chunks.append(f"{breadcrumb}\n{chunk}")
+            else:
+                chunks.append(chunk)
 
     logger.info(
         f"Chunked text: {len(text)} chars → {len(chunks)} chunks "
-        f"(size={size}, overlap={overlap})"
+        f"(semantic+structure, max_size={max_size}, "
+        f"threshold={settings.semantic_similarity_threshold}, "
+        f"{len(sections)} sections)"
     )
 
     return chunks

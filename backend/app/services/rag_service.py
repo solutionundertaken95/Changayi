@@ -47,9 +47,11 @@ touching any of the lower-level services.
 import logging
 from dataclasses import dataclass
 
+from app.config import settings
 from app.services.cleaner import clean_text, get_text_stats
 from app.services.chunker import chunk_text, get_chunk_stats
-from app.services.vector_store import store_chunks, search_chunks
+from app.services.vector_store import search_chunks, store_chunks
+from app.services.reranker import rerank
 
 logger = logging.getLogger(__name__)
 
@@ -134,29 +136,39 @@ def index_page(
     )
 
 
-def retrieve(session_id: str, query: str, k: int = 4) -> RetrievalResult:
+def retrieve(session_id: str, query: str, k: int | None = None) -> RetrievalResult:
     """
-    Retrieves the most relevant chunks for a given query.
+    Retrieves and reranks the most relevant chunks for a given query.
 
-    Called at question-answer time. The session_id must match
-    the one used in index_page() for this page.
-
-    In Phase 3, this is called inside the chat pipeline before
-    passing context to Gemini.
+    Two-stage pipeline:
+      1. HYBRID RETRIEVAL — dense vector search (semantic meaning) +
+         BM25 keyword search (exact tokens), fused with Reciprocal
+         Rank Fusion into a wide candidate set (settings.rerank_candidates).
+      2. RERANKING — a cross-encoder scores every (query, chunk) pair
+         directly; only the top `k` chunks are kept for the LLM.
 
     Args:
         session_id: Must match the session used when indexing
         query:      The user's question
-        k:          Number of chunks to retrieve (default 4)
+        k:          Number of final chunks to return (default settings.final_k)
 
     Returns:
-        RetrievalResult containing the matched chunks
+        RetrievalResult containing the reranked chunks
     """
+    k = k or settings.final_k
     logger.info(f"Retrieving for query: '{query[:60]}' (session: {session_id}, k={k})")
 
-    chunks = search_chunks(session_id=session_id, query=query, k=k)
+    # Stage 1: hybrid retrieval (wide candidate pool)
+    candidates = search_chunks(
+        session_id=session_id,
+        query=query,
+        k=settings.rerank_candidates,
+    )
 
-    logger.info(f"  → {len(chunks)} chunks retrieved")
+    # Stage 2: cross-encoder reranking (narrow to the final k)
+    chunks = rerank(query, candidates, top_k=k)
+
+    logger.info(f"  → {len(chunks)} chunks after hybrid retrieval + rerank")
 
     return RetrievalResult(
         session_id=session_id,

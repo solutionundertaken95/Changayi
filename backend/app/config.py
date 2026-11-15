@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 50
 
+    # --- Semantic chunking ---
+    # Minimum cosine similarity for two sentences to share a chunk
+    semantic_similarity_threshold: float = 0.55
+
+    # --- Hybrid search ---
+    # fetch_k: how many candidates the vector search pulls before fusion
+    # bm25_k:  how many candidates BM25 keyword search pulls
+    # Both candidate lists are merged with Reciprocal Rank Fusion (RRF)
+    fetch_k: int = 12
+    bm25_k: int = 8
+    rrf_k: int = 60  # standard RRF constant
+
+    # --- Reranking ---
+    # Cross-encoder model that scores (query, chunk) pairs directly
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rerank_candidates: int = 8  # how many fused candidates to rerank
+    final_k: int = 4            # how many chunks to finally send to the LLM
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

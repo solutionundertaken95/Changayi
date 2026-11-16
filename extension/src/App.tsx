@@ -66,8 +66,8 @@ function getButtonConfig(status: PageStatus, isOpen: boolean): ButtonConfig {
       return {
         label: '⏳ Analyzing…',
         background: 'linear-gradient(135deg, #9ca3af, #6b7280)',
-        disabled: true,
-        title: 'Analyzing page content, please wait…',
+        disabled: false,   // panel can still be opened to watch progress
+        title: 'Analyzing page content…',
       };
     case 'ready':
       return {
@@ -83,12 +83,12 @@ function getButtonConfig(status: PageStatus, isOpen: boolean): ButtonConfig {
         disabled: false,
         title: 'An error occurred. Click to retry.',
       };
-    default: // 'idle'
+    default: // 'idle' — nothing indexed yet; analysis happens on demand
       return {
         label: '✨ Ask AI',
-        background: 'linear-gradient(135deg, #9ca3af, #6b7280)',
-        disabled: true,
-        title: 'Loading…',
+        background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+        disabled: false,
+        title: 'Ask questions about this page (analyzed on demand)',
       };
   }
 }
@@ -130,7 +130,9 @@ const App: React.FC = () => {
           right: 20,
           height: 48,
           padding: '0 20px',
-          background: btnConfig.background,
+          background: isOpen || pageState.status === 'ready'
+            ? 'linear-gradient(135deg, #6366f1, #7c3aed)'
+            : btnConfig.background,
           color: '#fff',
           border: 'none',
           borderRadius: 24,

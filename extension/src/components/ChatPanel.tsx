@@ -19,7 +19,9 @@
 
 import React, { useState, useEffect, useRef, KeyboardEvent } from 'react';
 import { indexingState } from '../store/indexingState';
+import { workspaceState } from '../store/workspaceState';
 import { sendMessageStream } from '../services/api';
+import WorkspacePicker from './WorkspacePicker';
 import type { Message, Source } from '../types/index';
 
 // ─────────────────────────────────────────────────────────────
@@ -549,7 +551,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({ onPrompt, isReady, theme }) => 
       <p style={{ margin: 0, fontSize: 13, color: theme.emptySubtitle, lineHeight: 1.5, maxWidth: 260 }}>
         {isReady
           ? "I've analyzed this page and I'm ready to answer your questions."
-          : 'Analyzing the page… I\'ll be ready in a moment.'}
+          : 'Ask a question and I\'ll analyze this page on demand — nothing is indexed until you ask.'}
       </p>
     </div>
 
@@ -597,13 +599,9 @@ const EmptyState: React.FC<EmptyStateProps> = ({ onPrompt, isReady, theme }) => 
 
     {!isReady && (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div className="rag-spinner" style={{
-          width: 16, height: 16,
-          border: '2px solid #e5e7eb',
-          borderTopColor: '#6366f1',
-          borderRadius: '50%',
-        }} />
-        <span style={{ fontSize: 13, color: theme.emptySubtitle }}>Analyzing page content…</span>
+        <span style={{ fontSize: 13, color: theme.emptySubtitle }}>
+          💬 Send a question to analyze this page
+        </span>
       </div>
     )}
   </div>
@@ -623,6 +621,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [darkMode, setDarkMode]   = useState(false);
   const [pageState, setPageState] = useState(indexingState.getState());
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
 
   const theme = buildTheme(darkMode);
 
@@ -635,7 +634,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
     const unsubscribe = indexingState.subscribe((newState) => {
       setPageState(newState);
     });
-    return unsubscribe;
+    const unsubWorkspace = workspaceState.subscribe((id) => {
+      setActiveWorkspaceId(id);
+    });
+    void workspaceState.load();
+    return () => {
+      unsubscribe();
+      unsubWorkspace();
+    };
   }, []);
 
   // ── Clear messages when navigating to a new page (SPA) ──────
@@ -674,7 +680,23 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
   // ─────────────────────────────────────────────────────────────
   const handleSend = async (overrideText?: string) => {
     const question = overrideText ?? input.trim();
-    if (!question || isLoading || pageState.status !== 'ready') return;
+    if (!question || isLoading) return;
+
+    // ── On-demand indexing ────────────────────────────────────────
+    // The page is analyzed only now — when the user actually asks.
+    // In workspace mode the question can be answered from OTHER pages,
+    // so indexing the current page is not required.
+    if (!activeWorkspaceId) {
+      if (pageState.status === 'indexing') return;
+      const ensured = (window as unknown as { ragEnsureIndexed?: () => Promise<boolean> }).ragEnsureIndexed;
+      if (ensured) {
+        const ok = await ensured();
+        if (!ok) return; // indexing failed — error state already shown
+      }
+    }
+
+    const sessionId = indexingState.getState().sessionId;
+    if (!sessionId && !activeWorkspaceId) return;
 
     // 1. Add user message
     const userMsg: Message = {
@@ -695,10 +717,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
       { id: aiMsgId, role: 'assistant', content: '', timestamp: new Date(), sources: [] },
     ]);
 
-    // 3. Open SSE stream
+    // 3. Open SSE stream (workspace_id set → cross-tab scope)
     try {
       await sendMessageStream(
-        { session_id: pageState.sessionId!, question },
+        {
+          session_id: sessionId || 'workspace-mode',
+          question,
+          workspace_id: activeWorkspaceId ?? undefined,
+        },
 
         // onChunk — append token to the AI bubble
         (text) => {
@@ -770,8 +796,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
   };
 
-  const isReady = pageState.status === 'ready';
-  const canSend = isReady && input.trim().length > 0 && !isLoading;
+  const isReady = pageState.status === 'ready' || !!activeWorkspaceId;
+  const canSend = (isReady || pageState.status === 'idle') && input.trim().length > 0 && !isLoading;
 
   const pageTitle = pageState.pageTitle
     ? pageState.pageTitle.length > 40
@@ -908,22 +934,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
             </div>
           </div>
 
-          {/* Page context badge */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            background: theme.ctxBg,
-            borderRadius: 8,
-            padding: '5px 10px',
-          }}>
-            <span style={{ fontSize: 12 }}>
-              {isReady ? '✅' : pageState.status === 'indexing' ? '⏳' : '⚠️'}
-            </span>
-            <span style={{ fontSize: 12, color: theme.ctxText, fontWeight: 500 }}>
-              {isReady ? pageTitle : pageState.message || 'Loading…'}
-            </span>
-          </div>
+          {/* Scope selector: current page ↔ workspace KB (plus Add-to-KB) */}
+          <WorkspacePicker theme={theme} />
         </div>
 
         {/* ── MESSAGES AREA ─────────────────────────────────── */}
@@ -981,11 +993,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={
-                isReady
-                  ? 'Ask about this page… (Enter to send)'
-                  : 'Analyzing page, please wait…'
+                activeWorkspaceId
+                  ? 'Ask across your knowledge base… (Enter to send)'
+                  : isReady
+                    ? 'Ask about this page… (Enter to send)'
+                    : 'Press Enter to analyze & ask…'
               }
-              disabled={!isReady || isLoading}
+              disabled={!canSend && !isReady}
               rows={1}
               style={{
                 flex: 1,

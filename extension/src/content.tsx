@@ -1,30 +1,30 @@
 /**
- * content.tsx — Chrome Extension Content Script (Phase 4)
+ * content.tsx — Chrome Extension Content Script
  *
- * What this script does now:
- *   1. Injects the React chatbot UI into every webpage (Phase 1)
- *   2. Extracts the page's readable text (Phase 4 — NEW)
- *   3. Sends it to the FastAPI backend for indexing (Phase 4 — NEW)
- *   4. Updates shared state so the React UI knows when it's ready (Phase 4 — NEW)
+ * What this script does:
+ *   1. Injects the React chatbot UI into every webpage
+ *   2. Exposes ON-DEMAND page indexing — NOTHING is indexed automatically
+ *   3. Updates shared state so the React UI knows when it's ready
  *
- * Execution order (important for UX):
+ * ─── INDEXING POLICY (changed from auto-indexing) ───
+ *
+ *   BEFORE: every page load (and every SPA navigation) silently fired
+ *   POST /api/page/index — "Analyzing…" appeared on every site visited.
+ *
+ *   NOW: the page is indexed ONLY when the user asks for it:
+ *     - sending the first question in the panel, or
+ *     - clicking "Add to Knowledge Base" (workspace)
+ *
+ *   Execution order when indexing IS requested:
  *   ┌─────────────────────────────────────────────┐
- *   │ Page loads                                  │
+ *   │ Page loads → mount React (button shows)     │
+ *   │   ↓  (nothing else happens — zero indexing) │
+ *   │ User opens panel / asks a question          │
  *   │   ↓                                         │
- *   │ Mount React app  ← IMMEDIATE (button shows) │
+ *   │ ensureIndexed() → POST /api/page/index      │
  *   │   ↓                                         │
- *   │ Extract page text (fast, DOM read)           │
- *   │   ↓                                         │
- *   │ POST /api/page/index (async, ~2-5 seconds)  │
- *   │   ↓                                         │
- *   │ indexingState → 'ready'                     │
- *   │   ↓                                         │
- *   │ React re-renders: button activates          │
+ *   │ indexingState → 'ready' → chat flows        │
  *   └─────────────────────────────────────────────┘
- *
- * The user sees the button immediately. While the backend processes the page,
- * the button shows a subtle "analyzing" state. When it's ready, the button
- * lights up and the user can start asking questions.
  */
 
 import React from 'react';
@@ -112,20 +112,28 @@ function injectChatbot(): void {
     </React.StrictMode>
   );
 
-  // ── Step 2: Index the page in the background ─────────────────────────
-  // We don't await this — it runs concurrently with the mounted React app.
-  indexCurrentPage();
+  // ── Step 2: NO automatic indexing.
+  // The page is indexed only when the user explicitly acts
+  // (asks a question or adds it to a workspace) — see ensureIndexed().
 }
 
 // ---------------------------------------------------------------------------
-// Page indexing pipeline
+// On-demand indexing pipeline
 // ---------------------------------------------------------------------------
 
 // Guards against concurrent indexing (e.g., rapid SPA navigations)
 let isIndexing = false;
 
-async function indexCurrentPage(): Promise<void> {
-  if (isIndexing) return;
+// The URL that was last indexed — used to detect stale sessions after
+// SPA navigation. Question-triggered indexing always re-checks this.
+let lastIndexedUrl: string | null = null;
+
+async function ensureIndexed(): Promise<boolean> {
+  // Re-check URL: if SPA navigation happened after the last successful
+  // index, this session is stale and must be re-run for the new page.
+  if (lastIndexedUrl === window.location.href) return true;
+
+  if (isIndexing) return false;
   isIndexing = true;
 
   const sessionId = generateSessionId();
@@ -170,6 +178,7 @@ async function indexCurrentPage(): Promise<void> {
     });
 
     if (result.success) {
+      lastIndexedUrl = window.location.href;
       indexingState.update({
         status: 'ready',
         sessionId,
@@ -195,30 +204,27 @@ async function indexCurrentPage(): Promise<void> {
         : `Error: ${message}`,
       pageTitle: document.title,
     });
+    return false;
   } finally {
     isIndexing = false;
   }
+  return true;
 }
 
+// Expose for React components (ChatPanel) which need to trigger
+// indexing on user action.
+(window as unknown as { ragEnsureIndexed: () => Promise<boolean> }).ragEnsureIndexed =
+  ensureIndexed;
+
 // ---------------------------------------------------------------------------
-// SPA Navigation Detection
+// SPA Navigation Detection — STALENESS ONLY (no auto re-index)
 // ---------------------------------------------------------------------------
 //
-// The Problem:
-//   Single-Page Applications (GitHub, YouTube, Medium, Twitter/X) change the
-//   URL via JavaScript — history.pushState() — WITHOUT reloading the page.
-//   Chrome only runs content scripts on actual page loads, so our script would
-//   keep answering questions about the OLD page even after the user navigates.
-//
-// The Fix:
-//   We intercept the three ways a URL can change without a page reload:
-//     1. history.pushState()    — SPA "click a link" navigation
-//     2. history.replaceState() — SPA "update URL without history entry"
-//     3. popstate event         — Browser back/forward buttons
-//
-// When a URL change is detected:
-//   - Wait 600ms for the new page's DOM to settle
-//   - Re-run the indexing pipeline for the new URL
+//   Single-Page Applications change the URL via history.pushState() WITHOUT
+//   reloading. We do NOT auto-index on navigation (old behavior). We only
+//   mark the session stale, so the next user ACTION (question / add-to-KB)
+//   re-indexes the new page first.
+// ---------------------------------------------------------------------------
 
 let currentUrl = window.location.href;
 
@@ -227,12 +233,14 @@ function handleUrlChange(): void {
   if (newUrl === currentUrl) return; // Hash-only or duplicate — ignore
   currentUrl = newUrl;
 
-  console.log('[RAG Chatbot] URL changed → re-indexing:', newUrl);
-
-  // Small delay so the SPA can render the new page's DOM
-  setTimeout(() => {
-    indexCurrentPage();
-  }, 600);
+  // Invalidate the index for the old page. Nothing is fetched or POSTed
+  // here — indexing happens on the user's next explicit action.
+  lastIndexedUrl = null;
+  indexingState.update({
+    status: 'idle',
+    message: 'Page changed — content will be analyzed on your next action.',
+    pageTitle: document.title,
+  });
 }
 
 // Intercept pushState (most SPA navigation)

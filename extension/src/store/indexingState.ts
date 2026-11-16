@@ -40,6 +40,9 @@ export interface IndexingState {
   sessionId: string;
   message: string;
   pageTitle: string;
+  // URL the sessionId refers to — lets the UI detect stale sessions
+  // after SPA navigation (sessionId cleared when URL changes).
+  indexedUrl?: string;
 }
 
 type Listener = (state: IndexingState) => void;
@@ -54,8 +57,14 @@ class IndexingStateManager {
 
   private listeners: Listener[] = [];
 
-  /** Update the state and notify all subscribers. */
+  // Invalidate the session when the URL changes (stale session):
+  // the sessionId must never be used for a page it doesn't belong to.
   update(partial: Partial<IndexingState>): void {
+    const nextUrl = partial.indexedUrl ?? window?.location?.href;
+    if (this.state.indexedUrl && nextUrl && this.state.indexedUrl !== nextUrl) {
+      // URL changed since last index → previous session is invalid
+      partial = { sessionId: '', ...partial };
+    }
     this.state = { ...this.state, ...partial };
     this.listeners.forEach(listener => listener(this.state));
   }

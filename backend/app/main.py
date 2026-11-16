@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import health
 from app.api.routes import page
 from app.api.routes import chat
+from app.api.routes import workspace
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -59,6 +60,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api", tags=["Health"])
 app.include_router(page.router,   prefix="/api", tags=["Page Indexing"])
 app.include_router(chat.router,   prefix="/api", tags=["Chat"])
+app.include_router(workspace.router, prefix="/api", tags=["Workspaces"])
 
 # ---------------------------------------------------------------------------
 # Root

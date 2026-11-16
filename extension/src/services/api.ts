@@ -17,6 +17,8 @@ import type {
   ChatRequest,
   ChatResponse,
   Source,
+  Workspace,
+  AddPageRequest,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,58 @@ export async function indexPage(
     method: 'POST',
     body: JSON.stringify(request),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces (Multi-Tab Knowledge Base)
+// ---------------------------------------------------------------------------
+
+/** Create a new, empty workspace. */
+export async function createWorkspace(name: string): Promise<Workspace> {
+  return apiFetch<Workspace>('/workspace/create', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+/** List every workspace, newest first. */
+export async function listWorkspaces(): Promise<Workspace[]> {
+  return apiFetch<Workspace[]>('/workspace/list');
+}
+
+/** Get one workspace with its registered pages. */
+export async function getWorkspace(workspaceId: string): Promise<Workspace> {
+  return apiFetch<Workspace>(`/workspace/${workspaceId}`);
+}
+
+/**
+ * Register an already-indexed page into a workspace.
+ * Re-adding the same URL replaces the previous entry (re-index case).
+ */
+export async function addPageToWorkspace(
+  workspaceId: string,
+  request: AddPageRequest
+): Promise<Workspace> {
+  return apiFetch<Workspace>(`/workspace/${workspaceId}/add_page`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/** Remove a page entry from a workspace (its Chroma collection is kept). */
+export async function removePageFromWorkspace(
+  workspaceId: string,
+  url: string
+): Promise<Workspace> {
+  return apiFetch<Workspace>(
+    `/workspace/${workspaceId}/remove_page?url=${encodeURIComponent(url)}`,
+    { method: 'POST' }
+  );
+}
+
+/** Delete a workspace entirely. */
+export async function deleteWorkspace(workspaceId: string): Promise<void> {
+  await apiFetch(`/workspace/${workspaceId}`, { method: 'DELETE' });
 }
 
 /**

@@ -43,16 +43,19 @@ async def chat(request: ChatRequest) -> ChatResponse:
         result = chat_service.chat(
             session_id=request.session_id,
             question=request.question,
+            workspace_id=request.workspace_id,
         )
 
         return ChatResponse(
             session_id=result.session_id,
+            workspace_id=result.workspace_id,
             question=result.question,
             answer=result.answer,
             sources=[
                 Source(
                     content=s["content"],
                     chunk_index=s["chunk_index"],
+                    session_id=s.get("session_id"),
                 )
                 for s in result.sources
             ],
@@ -101,18 +104,32 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     """
     async def event_generator():
         try:
-            # Step 1: Retrieve relevant chunks
-            # rag_service.retrieve() is synchronous (ChromaDB is sync).
-            # asyncio.to_thread() runs it in a thread pool so the async
-            # event loop is not blocked while ChromaDB does its search.
-            retrieval = await asyncio.to_thread(
-                rag_service.retrieve,
-                request.session_id,
-                request.question,
-                4,
-            )
+            # Step 1: Retrieve relevant chunks.
+            # Single-page mode → rag_service.retrieve (sync ChromaDB).
+            # Workspace mode → fan-out hybrid search per page collection +
+            # cross-encoder rerank of the merged pool.
+            if request.workspace_id:
+                from app.services import workspace_service
+                from app.services.vector_store import search_workspace
 
-            if not retrieval.chunks:
+                session_ids = workspace_service.workspace_session_ids(request.workspace_id)
+                chunks = await asyncio.to_thread(
+                    search_workspace,
+                    request.workspace_id,
+                    session_ids,
+                    request.question,
+                    4,
+                ) if session_ids else []
+            else:
+                retrieval = await asyncio.to_thread(
+                    rag_service.retrieve,
+                    request.session_id,
+                    request.question,
+                    4,
+                )
+                chunks = retrieval.chunks
+
+            if not chunks:
                 no_ctx = (
                     "It looks like this page hasn't been analyzed yet. "
                     "Please wait a moment while I read the page, then try again."
@@ -125,13 +142,17 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             # Step 2: Send sources immediately so the UI can show them
             # before the answer even starts streaming.
             sources_payload = [
-                {"content": c["content"], "chunk_index": c["chunk_index"]}
-                for c in retrieval.chunks
+                {
+                    "content": c["content"],
+                    "chunk_index": c["chunk_index"],
+                    "session_id": c.get("session_id"),
+                }
+                for c in chunks
             ]
             yield f'data: {_json.dumps({"type": "sources", "sources": sources_payload})}' + "\n\n"
 
             # Step 3: Stream Gemini answer chunk by chunk
-            context_chunks = [c["content"] for c in retrieval.chunks]
+            context_chunks = [c["content"] for c in chunks]
             gen = generate_answer_stream(context_chunks, request.question)
 
             # generate_answer_stream is a synchronous Python generator.

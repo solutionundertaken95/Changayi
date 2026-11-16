@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     rerank_candidates: int = 8  # how many fused candidates to rerank
     final_k: int = 4            # how many chunks to finally send to the LLM
 
+    # --- Workspaces (multi-tab knowledge bases) ---
+    workspace_store_dir: str = "./data/workspaces"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

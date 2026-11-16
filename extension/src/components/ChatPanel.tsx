@@ -799,11 +799,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
   const isReady = pageState.status === 'ready' || !!activeWorkspaceId;
   const canSend = (isReady || pageState.status === 'idle') && input.trim().length > 0 && !isLoading;
 
-  const pageTitle = pageState.pageTitle
-    ? pageState.pageTitle.length > 40
-      ? pageState.pageTitle.slice(0, 37) + '…'
-      : pageState.pageTitle
-    : 'Current Page';
+  void pageTitle;
 
   // ── Show typing indicator only while waiting for first chunk ─
   // Once the AI message placeholder is added (content may be ''),

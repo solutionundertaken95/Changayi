@@ -28,6 +28,8 @@ Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, 
 - [Evaluation & Retrieval Performance](#evaluation--retrieval-performance)
 - [Results and Impact](#results-and-impact)
 - [Getting Started](#getting-started)
+- [Multi-Tab Knowledge Base](#multi-tab-knowledge-base)
+- [Privacy & Indexing Policy](#privacy--indexing-policy)
 - [Future Scope](#future-scope)
 
 ---
@@ -41,6 +43,8 @@ Changayi provides a browser-native AI assistant for webpage understanding. Inste
 ### Core capabilities
 
 - Chrome extension UI for instant webpage-based Q&A
+- **On-demand indexing** — nothing is analyzed until you ask a question or explicitly add a page to a knowledge base
+- **Multi-Tab Knowledge Base** — pin several tabs into a workspace and ask questions across all of them at once
 - Page content extraction from the current browser tab
 - Content cleaning and noise removal
 - Structure-aware chunking (heading hierarchy + breadcrumb context prefixes)
@@ -50,7 +54,7 @@ Changayi provides a browser-native AI assistant for webpage understanding. Inste
 - Vector similarity search using Chroma DB
 - LLM-powered answer generation using Gemini or OpenAI
 - Streaming responses for a conversational experience
-- Source-aware responses based on the active page context
+- Source-aware responses showing which page and chunk each answer came from
 
 
 ---
@@ -67,9 +71,11 @@ flowchart TD
     Chunker --> Embedder[HuggingFace Embeddings]
     Embedder --> Chroma[Chroma DB]
     User --> Question[Question]
-    Question --> EmbedderQ[Question Embedding]
-    EmbedderQ --> Search[Hybrid Search: Dense + BM25]
-    Search --> Fuse[Reciprocal Rank Fusion]
+    Question --> Scope{Scope?}
+    Scope -->|Current page| Search1[Hybrid Search: One Collection]
+    Scope -->|Workspace| Fanout[Per-Page Hybrid Search + Merge]
+    Search1 --> Fuse[Reciprocal Rank Fusion]
+    Fanout --> Fuse
     Fuse --> Rerank[Cross-Encoder Reranker]
     Rerank --> Relevant[Top-k Relevant Chunks]
     Relevant --> LLM[Gemini / OpenAI]
@@ -81,15 +87,15 @@ flowchart TD
 
 ### End-to-end flow
 
-1. The user opens a webpage and clicks the floating AI button in the Chrome extension.
-2. A content script extracts the page text and sends it to the backend.
+1. The user opens a webpage — **nothing is analyzed automatically**; the floating "Ask AI" button appears immediately.
+2. When the user sends a question (or clicks "+ KB"), the page is analyzed on demand: a content script extracts the text and sends it to the backend.
 3. The backend removes noise such as navigation, boilerplate, and irrelevant markup.
-4. The cleaned text is split into chunks.
+4. The cleaned text is split into semantically coherent, structure-aware chunks.
 5. Each chunk is embedded and stored in Chroma DB.
-6. When the user asks a question, retrieval runs in **hybrid mode**: dense semantic search plus BM25 keyword search, fused with Reciprocal Rank Fusion.
-7. A cross-encoder reranker scores each candidate against the question, and only the top chunks are injected into the LLM prompt.
-8. The model answers using the webpage content as context.
-9. The response is streamed back to the extension UI and rendered in the panel.
+6. Retrieval runs in **hybrid mode**: dense semantic search plus BM25 keyword search, fused with Reciprocal Rank Fusion. If a workspace is selected, this fans out across every page in the workspace.
+7. A cross-encoder reranker scores each candidate against the question — including candidates from different tabs — and only the top chunks reach the LLM prompt.
+8. The model answers using the retrieved content as context.
+9. The response is streamed back to the extension UI and rendered in the panel with source cards showing the origin page.
 
 ---
 
@@ -305,6 +311,50 @@ The floating “Ask AI” button should then appear on supported web pages.
 
 ---
 
+## Multi-Tab Knowledge Base
+
+Real research rarely lives on one page. The Multi-Tab Knowledge Base lets you group several indexed pages into a named **workspace** and ask questions that are answered across **all of them at once**.
+
+### How it works
+
+1. While browsing, click **＋ KB** in the chat panel. This analyzes the current page (on demand) and registers it into your workspace.
+2. Repeat on other tabs — each page joins the same knowledge base.
+3. Switch the scope selector from "Current page only" to your workspace. Every question is now answered from **all pages in the workspace combined**.
+
+### Why this is where the retrieval stack shines
+
+Cross-page retrieval is the scenario the upgraded pipeline was built for:
+
+- **Per-page hybrid search fans out** to every page collection in the workspace, then results are merged and deduplicated.
+- **Dense vector scores from different documents aren't directly comparable** — each document's chunks cluster around their own topic center. Only the cross-encoder reranker, which sees `(query, chunk)` pairs jointly, can fairly arbitrate candidates coming from different tabs.
+- **BM25 catches exact tokens** (model numbers, error codes, names) that appear on only one of many tabs.
+- Source cards show **which page** each answer chunk came from.
+
+### Backend surface
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/workspace/create` | Create an empty workspace |
+| `GET /api/workspace/list` | List workspaces |
+| `GET /api/workspace/{id}` | Get one workspace with its pages |
+| `POST /api/workspace/{id}/add_page` | Register an indexed page (explicit opt-in) |
+| `POST /api/workspace/{id}/remove_page?url=…` | Remove a page entry |
+| `DELETE /api/workspace/{id}` | Delete a workspace |
+| `POST /api/chat` / `POST /api/chat/stream` | Both accept an optional `workspace_id` for cross-tab scope |
+
+---
+
+## Privacy & Indexing Policy
+
+Changayi analyzes **only what you explicitly ask it to**:
+
+- **No automatic indexing.** Opening a page does nothing — the floating button is active immediately, and no page text ever leaves the browser until you act.
+- **Index on question.** Sending your first question triggers analysis of that page. Analysis state shows inside the panel, not as an ambient badge on every site.
+- **Opt-in knowledge base.** A page enters a workspace only when you click **＋ KB**. Nothing is added to any KB automatically, and SPA navigation never silently re-indexes — the next action re-analyzes only if needed.
+- **Local storage.** Chunks and embeddings stay in your local Chroma DB; workspace membership is a small local JSON registry. The only external call is to the LLM provider when generating an answer.
+
+---
+
 ## Future Scope
 
 - Persist vector collections across sessions for improved user continuity
@@ -313,6 +363,8 @@ The floating “Ask AI” button should then appear on supported web pages.
 - Support PDF and uploaded document indexing
 - Improve retrieval quality using metadata filtering
 - Persist the BM25 keyword index for site-scale (multi-page) hybrid retrieval
+- Extend workspaces with shared/collaborative knowledge bases
+- Add conversation memory inside workspaces (follow-up questions across tabs)
 - Add user authentication and secure API access
 - Add browser-side caching and offline support
 - Add observability and usage analytics

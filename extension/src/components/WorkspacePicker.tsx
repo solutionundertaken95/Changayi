@@ -48,7 +48,6 @@ const WorkspacePicker: React.FC<PickerProps> = ({ theme }) => {
   }, []);
 
   const active = workspaces.find((w) => w.workspace_id === activeId) ?? null;
-  const isReady = pageState.status === 'ready';
   const isIndexing = pageState.status === 'indexing';
 
   /** Index (if needed) + register current page into the selected workspace. */

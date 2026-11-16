@@ -11,6 +11,19 @@
  */
 
 import type { Workspace } from "../types";
+import { listWorkspaces } from "../services/api";
+
+// Declare the chrome API globally so TypeScript resolves it even when
+// @types/chrome isn't in every consumer's compilation path.
+declare const chrome: {
+  storage: {
+    local: {
+      get: (keys: string[]) => Promise<Record<string, unknown>>;
+      set: (items: Record<string, unknown>) => Promise<void>;
+      remove: (keys: string | string[]) => Promise<void>;
+    };
+  };
+};
 
 type Listener = (workspaceId: string | null, workspaces: Workspace[]) => void;
 
@@ -28,7 +41,7 @@ class WorkspaceStateManager {
     try {
       const stored = await chrome.storage.local.get(["activeWorkspaceId"]);
       if (stored.activeWorkspaceId) {
-        this.activeWorkspaceId = stored.activeWorkspaceId;
+        this.activeWorkspaceId = stored.activeWorkspaceId as string;
       }
     } catch {
       // chrome.storage unavailable (e.g. dev outside extension) — ignore
@@ -36,7 +49,6 @@ class WorkspaceStateManager {
 
     // Fetch workspace list from backend
     try {
-      const { listWorkspaces } = await import("../services/api");
       this.workspaces = await listWorkspaces();
 
       // Drop the stored selection if that workspace no longer exists

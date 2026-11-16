@@ -158,7 +158,7 @@ async function ensureIndexed(): Promise<boolean> {
         message: 'Not enough content on this page to analyze.',
         pageTitle: extracted.title,
       });
-      return;
+      return false;
     }
 
     // Signal: sending to backend

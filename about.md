@@ -233,3 +233,58 @@ Per-category highlights:
 ### Verdict after the expanded benchmark
 
 **The change is now empirically justified, no caveats needed.** The strict improvement chain (dense → hybrid → rerank) shows each new stage contributes measurably: chunking keeps precision at parity while producing 2× more coherent chunks, hybrid buys recall (+0.03 over OLD, +0.05 over dense-only), and reranking buys ranking quality (+0.054 MRR over OLD). Full NEW beats OLD on Recall (+0.020), MRR (+0.054), nDCG (+0.026), and Precision (+0.010) at 100 queries over 51 chunks with distractor mass — the previous "conditional justification" from the 12-chunk toy benchmark is resolved.
+
+---
+
+## 7. Follow-up: On-Demand Indexing & Multi-Tab Knowledge Base
+
+**Date:** after the scaled benchmark validated the retrieval upgrade, two product-level changes were implemented: (a) a change to *when* pages get analyzed, and (b) a change to *what* can be searched.
+
+### 7.1 On-demand indexing (behavior change)
+
+**Problem:** the content script auto-fired `POST /api/page/index` on every page load and on every SPA navigation (`pushState`/`replaceState`/`popstate` every fired a silent re-index). The user saw an "Analyzing…" badge on every site visited, with no way to opt out — pages were analyzed that the user never asked about.
+
+**Change:** indexing is now strictly on-demand. `content.tsx` was restructured around a single entry point, `ensureIndexed()`:
+
+- Page load: React UI mounts immediately, **zero indexing** happens.
+- Sending the first question in the panel → `ensureIndexed()` analyzes that page just-in-time.
+- Clicking "＋ KB" → same on-demand indexing, then workspace registration.
+- SPA navigation no longer re-indexes; it only marks the session stale (`lastIndexedUrl = null`), so the *next user action* re-analyzes the new page if needed. `indexingState` now tracks `indexedUrl` and auto-invalidates stale `sessionId`s, so a session can never be used for the wrong page.
+- The floating button is active on load (no more disabled "Analyzing" state); the "retry" path for indexing errors lives in the panel.
+
+**Why this matters:** privacy (no ambient page analysis), clarity (analysis state only appears inside the opened panel), and efficiency (no backend load for pages the user never interacts with).
+
+### 7.2 Multi-Tab Knowledge Base (workspaces)
+
+**Problem:** the system was hard-locked to one page per session — each Chroma collection is named by `session_id` and a new URL wipes the previous page's data. Research spanning multiple tabs was impossible: "compare what tab A said with tab B" could not retrieve across pages.
+
+**Change:** a **workspace** is a named registry of already-indexed pages, persisted as local JSON (`data/workspaces/{id}.json`), thread-safe in the backend. Each page keeps its own Chroma collection; the workspace just points at them.
+
+Backend additions:
+
+- `services/workspace_service.py` — workspace CRUD (create/list/get/delete, add/remove page; re-adding a URL replaces its entry, covering re-index).
+- `vector_store.search_workspace()` — the retrieval core: **fan-out hybrid search** per page collection, merge, deduplicate identical content, then **cross-encoder rerank the combined pool**. This is deliberate: dense scores from different documents aren't comparable (each doc's chunks cluster around its own topic center), so only the cross-encoder — which scores `(query, chunk)` jointly regardless of origin tab — can fairly arbitrate cross-tab candidates. This is the scenario the retrieval upgrade was designed for.
+- `routes/workspace.py` — six endpoints (`create`, `list`, `get/{id}`, `add_page`, `remove_page`, `DELETE /{id}`).
+- `ChatRequest`/`ChatResponse` gained an optional `workspace_id`; both `/chat` and `/chat/stream` support cross-tab scope; sources now carry the origin `session_id` so the UI can show which tab each answer chunk came from. Empty workspaces return friendly guidance instead of errors.
+
+Extension additions:
+
+- `store/workspaceState.ts` — pub/sub singleton for active workspace selection, persisted via `chrome.storage.local` (with a local `chrome` type declaration so TS resolves without `@types/chrome` in every compile path).
+- `components/WorkspacePicker.tsx` — scope selector ("Current page only" ↔ workspace with page count), the **＋ KB** button (the only path a page takes into a KB — explicit opt-in), and inline workspace creation.
+- `ChatPanel.tsx` — sends `workspace_id` with streamed questions in KB mode and skips the current-page indexing gate there (the answer may come from other tabs); placeholder text reflects the active scope.
+- `services/api.ts` — workspace CRUD client.
+
+**Verification:** `scripts/smoke_test_workspace.py` — indexes 3 simulated tabs (neural networks / coral reefs / JWST), creates a workspace, registers the pages, and runs 4 cross-tab queries. All 4 top-1 results came from the correct originating tab with strong reranker scores (+8.37, +8.02, +6.60, +7.18), confirming cross-tab arbitration works; empty-workspace handling verified. Extension build passes typecheck and production build cleanly.
+
+### 7.3 Bugs hit during implementation
+
+- **Unresolved `chrome` in TypeScript** — `@types/chrome` wasn't in the compile path, so `chrome.storage` showed as an error. Fixed with a minimal local `declare const chrome` covering exactly the `storage.local` methods used.
+- **Dynamic import noise** — vite warned on a dynamic `import('../services/api')`; converted to a static import.
+- **`noUnusedLocals` build failures** — leftover variables after refactors (`isReady`, `pageTitle` in ChatPanel; `isReady` in WorkspacePicker); removed. Also fixed a `return;` in a `Promise<boolean>` function in `content.tsx`.
+
+### 7.4 State of the project after this phase
+
+- Retrieval upgrade: validated at scale (Section 6).
+- Indexing: strictly user-initiated (7.1).
+- Retrieval scope: single page **or** multi-tab workspace, selected in the UI (7.2).
+- Deferred (intentionally): conversational memory / follow-up question rewriting — designed earlier, postponed; it remains the natural next feature on top of workspaces.

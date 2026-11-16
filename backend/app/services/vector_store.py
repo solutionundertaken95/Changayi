@@ -220,6 +220,66 @@ def search_chunks(session_id: str, query: str, k: int = 4) -> list[dict]:
     return results
 
 
+def search_workspace(
+    workspace_id: str,
+    session_ids: list[str],
+    query: str,
+    k: int | None = None,
+) -> list[dict]:
+    """
+    FAN-OUT SEARCH across every page collection in a workspace.
+
+    Runs hybrid search (dense + BM25 → RRF) independently in each
+    collection, then reranks the MERGED candidate pool with the
+    cross-encoder so candidates from different tabs compete fairly.
+
+    Args:
+        workspace_id: For logging only
+        session_ids:  The page collections to search (from workspace_service)
+        query:        The user's question
+        k:            Final number of chunks (default settings.final_k)
+
+    Returns:
+        List of dicts: { content, chunk_index, session_id, rerank_score }
+    """
+    from app.services.reranker import rerank
+
+    k = k or settings.final_k
+    merged: list[dict] = []
+    searched = 0
+    for sid in session_ids:
+        try:
+            candidates = search_chunks(sid, query, k=settings.fetch_k)
+        except Exception as e:
+            logger.warning(f"Workspace fan-out: search failed for session '{sid}': {e}")
+            continue
+        searched += 1
+        for c in candidates:
+            c["session_id"] = sid
+        merged.extend(candidates)
+
+    if not merged:
+        logger.warning(f"Workspace '{workspace_id}': no candidates from {len(session_ids)} pages")
+        return []
+
+    logger.info(
+        f"Workspace '{workspace_id}': fan-out over {searched}/{len(session_ids)} pages, "
+        f"{len(merged)} merged candidates"
+    )
+
+    # Deduplicate identical content (pages can overlap, e.g. same site)
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in merged:
+        if c["content"] not in seen:
+            seen.add(c["content"])
+            unique.append(c)
+
+    # Cross-collection scores aren't comparable — the reranker fixes that:
+    # it scores every (query, chunk) pair jointly, regardless of origin tab.
+    return rerank(query, unique, top_k=k)
+
+
 def _delete_collection(collection_name: str) -> None:
     """
     Deletes a ChromaDB collection if it exists.

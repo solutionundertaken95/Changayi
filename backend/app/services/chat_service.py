@@ -42,6 +42,8 @@ from dataclasses import dataclass
 
 from app.services import rag_service
 from app.services import llm_service
+from app.services import workspace_service
+from app.services.vector_store import search_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -52,37 +54,64 @@ class ChatResult:
     session_id: str
     question: str
     answer: str
-    sources: list[dict]   # Each: { content: str, chunk_index: int }
+    sources: list[dict]   # Each: { content, chunk_index, session_id? }
+    workspace_id: str | None = None
 
 
-def chat(session_id: str, question: str, k: int = 4) -> ChatResult:
+def chat(session_id: str, question: str, k: int = 4, workspace_id: str | None = None) -> ChatResult:
     """
     Runs the full RAG pipeline for a single user question.
 
+    Two retrieval scopes:
+      - workspace_id is None (default): search only this session's page.
+      - workspace_id is set: FAN OUT across every page registered in the
+        workspace — hybrid search runs per page collection, merged
+        candidates are deduplicated, and the cross-encoder reranks the
+        combined pool so chunks from different tabs compete fairly.
+
     Args:
-        session_id: Must match the session_id used when the page was indexed.
-                    This tells ChromaDB which page's chunks to search.
-        question:   The user's question from the chat input.
-        k:          Number of chunks to retrieve (default 4).
-                    More chunks = more context, but also longer prompt.
+        session_id:   Must match the session_id used when the page was indexed.
+        question:     The user's question from the chat input.
+        k:            Number of chunks to retrieve (default 4).
+        workspace_id: Optional workspace to search across multiple tabs.
 
     Returns:
         ChatResult with the answer and the source chunks used.
 
     Raises:
-        ValueError: If the session has no indexed content (page not indexed yet)
+        ValueError: If the session/workspace has no indexed content
         Exception:  If retrieval or Gemini call fails
     """
-    logger.info(f"Chat request | session='{session_id}' | question='{question[:60]}'")
+    scope = f"workspace='{workspace_id}'" if workspace_id else f"session='{session_id}'"
+    logger.info(f"Chat request | {scope} | question='{question[:60]}'")
 
-    # ── Step 1: Retrieve relevant chunks from ChromaDB ────────────────────
+    # ── Step 1: Retrieve relevant chunks ──────────────────────────────
     logger.info("Step 1/2: Retrieving relevant chunks...")
 
-    retrieval = rag_service.retrieve(
-        session_id=session_id,
-        query=question,
-        k=k,
-    )
+    if workspace_id:
+        session_ids = workspace_service.workspace_session_ids(workspace_id)
+        if not session_ids:
+            logger.warning(f"Workspace '{workspace_id}' has no pages or does not exist")
+            return ChatResult(
+                session_id=session_id,
+                question=question,
+                answer=(
+                    "This workspace has no indexed pages yet. "
+                    "Open a page, index it, and add it to the workspace first."
+                ),
+                sources=[],
+                workspace_id=workspace_id,
+            )
+
+        chunks = search_workspace(
+            workspace_id=workspace_id,
+            session_ids=session_ids,
+            query=question,
+            k=k,
+        )
+    else:
+        retrieval = rag_service.retrieve(session_id=session_id, query=question, k=k)
+        chunks = retrieval.chunks
 
     if not retrieval.chunks:
         # This means the page hasn't been indexed yet, or the session_id is wrong
@@ -95,14 +124,15 @@ def chat(session_id: str, question: str, k: int = 4) -> ChatResult:
                 "Please wait a moment while I read the page, then try again."
             ),
             sources=[],
+            workspace_id=workspace_id,
         )
 
     # Extract just the text content for the prompt
-    chunk_texts = [c["content"] for c in retrieval.chunks]
+    chunk_texts = [c["content"] for c in chunks]
 
     logger.info(f"  → {len(chunk_texts)} chunks retrieved")
 
-    # ── Step 2: Generate answer with Gemini ───────────────────────────────
+    # ── Step 2: Generate answer with Gemini ───────────────────────────
     logger.info("Step 2/2: Generating answer with Gemini...")
 
     answer = llm_service.generate_answer(
@@ -116,5 +146,6 @@ def chat(session_id: str, question: str, k: int = 4) -> ChatResult:
         session_id=session_id,
         question=question,
         answer=answer,
-        sources=retrieval.chunks,  # Pass the full chunk dicts (content + chunk_index)
+        sources=chunks,  # Full chunk dicts (content, chunk_index, session_id?)
+        workspace_id=workspace_id,
     )

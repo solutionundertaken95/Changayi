@@ -90,6 +90,12 @@ class SearchResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Sent by the Chrome extension when the user types a question."""
     session_id: str
+    # Optional: if provided, the question is answered across ALL pages in
+    # the workspace instead of just this session's page.
+    workspace_id: str | None = Field(
+        default=None,
+        description="If set, search every page in this workspace (multi-tab KB)",
+    )
     question: str = Field(..., min_length=3, example="What are the main topics on this page?")
 
 
@@ -97,11 +103,49 @@ class Source(BaseModel):
     """A source chunk that contributed to the AI's answer."""
     content: str
     chunk_index: int
+    session_id: str | None = None   # Origin tab when answering a workspace
 
 
 class ChatResponse(BaseModel):
     """Returned after the full RAG pipeline: retrieve chunks → prompt Gemini → respond."""
     session_id: str
+    workspace_id: str | None = None
     question: str
     answer: str
     sources: list[Source]
+
+
+# ---------------------------------------------------------------------------
+# Workspaces — multi-tab knowledge bases
+# ---------------------------------------------------------------------------
+
+class WorkspacePage(BaseModel):
+    """One indexed page inside a workspace."""
+    session_id: str
+    url: str
+    title: str
+    chunks: int
+    indexed_at: float
+
+
+class WorkspaceResponse(BaseModel):
+    """A workspace: a named group of indexed pages searchable as one corpus."""
+    workspace_id: str
+    name: str
+    pages: list[WorkspacePage]
+    created_at: float
+
+
+class CreateWorkspaceRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80, example="ML research")
+
+
+class AddPageRequest(BaseModel):
+    """
+    Registers an already-indexed page into a workspace.
+    The page must have been indexed via /api/page/index first.
+    """
+    session_id: str
+    url: str
+    title: str
+    chunks: int

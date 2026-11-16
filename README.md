@@ -205,8 +205,9 @@ The user asks a question about the page; Changayi answers strictly from that pag
 
 The backend log for the same interaction — showing the RAG pipeline doing its work: cleaning and chunking the page, hybrid retrieval pulling dense + BM25 candidates, the cross-encoder reranking them, and Gemini generating the grounded answer:
 
-![Backend logs showing chunking, hybrid retrieval, reranking and LLM generation](Backend.png)
-
+![Backend logs showing chunking, hybrid retrieval, reranking and LLM generation](Phase1_2.png)
+![Backend logs showing chunking, hybrid retrieval, reranking and LLM generation](Phase2_3.png)
+![Backend logs showing chunking, hybrid retrieval, reranking and LLM generation](Phase_4.png)
 ---
 
 ### Technical Challenges Faced

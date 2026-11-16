@@ -191,6 +191,7 @@ flowchart TD
 The floating "Ask AI" panel opens on the page you're reading, ready for questions:
 
 ![Changayi chatbot panel on a webpage](Chatbot.png)
+![Multi tab kb](KB.png)
 
 ### Asking questions, getting grounded answers
 

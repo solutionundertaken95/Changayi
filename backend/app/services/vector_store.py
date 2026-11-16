@@ -32,6 +32,7 @@ vector_store.py — ChromaDB + Hybrid Search (dense vectors + BM25 keywords).
 """
 
 import logging
+import os
 import re
 
 import chromadb
@@ -42,6 +43,11 @@ from app.services.embedder import get_embeddings
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Allow the benchmark harness to point Chroma at a scratch directory
+# without touching production data.
+def _persist_dir() -> str:
+    return os.environ.get("CHROMA_PERSIST_DIR_OVERRIDE") or settings.chroma_persist_dir
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -63,7 +69,7 @@ def _collection_name(session_id: str) -> str:
 
 
 def _client() -> "chromadb.api.ClientAPI":
-    return chromadb.PersistentClient(path=settings.chroma_persist_dir)
+    return chromadb.PersistentClient(path=_persist_dir())
 
 
 def store_chunks(session_id: str, chunks: list[str]) -> int:
@@ -95,7 +101,7 @@ def store_chunks(session_id: str, chunks: list[str]) -> int:
         embedding=get_embeddings(),
         metadatas=metadatas,
         collection_name=collection,
-        persist_directory=settings.chroma_persist_dir,
+        persist_directory=_persist_dir(),
     )
 
     logger.info(f"Stored {len(chunks)} chunks in collection '{collection}'")
@@ -183,7 +189,7 @@ def search_chunks(session_id: str, query: str, k: int = 4) -> list[dict]:
     vectorstore = Chroma(
         collection_name=collection,
         embedding_function=get_embeddings(),
-        persist_directory=settings.chroma_persist_dir,
+        persist_directory=_persist_dir(),
     )
 
     # 1. Dense search — semantic meaning

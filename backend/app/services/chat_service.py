@@ -43,7 +43,9 @@ from dataclasses import dataclass
 from app.services import rag_service
 from app.services import llm_service
 from app.services import workspace_service
+from app.config import settings
 from app.services.vector_store import search_workspace
+from app.services.agent_service import run_agent
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,48 @@ def chat(session_id: str, question: str, k: int = 4, workspace_id: str | None = 
     # ── Step 1: Retrieve relevant chunks ──────────────────────────────
     logger.info("Step 1/2: Retrieving relevant chunks...")
 
+    if settings.agent_enabled:
+        # ── Agentic path: grade → rewrite / escalate → generate → verify ──
+        agent_result = run_agent(
+            session_id=session_id,
+            question=question,
+            workspace_id=workspace_id,
+            k=k,
+        )
+        chunks = agent_result.chunks
+        if chunks:
+            logger.info(
+                f"Agent trace: {agent_result.steps_used} step(s), "
+                f"rewritten={agent_result.rewritten_query is not None}, "
+                f"escalated={agent_result.escalated_to_workspace}, "
+                f"grounded={agent_result.grounded}"
+            )
+            # Skip the empty-context check below — the agent already handled it
+            chunk_texts = [c["content"] for c in chunks]
+            logger.info(f"  → {len(chunk_texts)} chunks retrieved")
+            logger.info("Step 2/2: Generating answer with Gemini...")
+            answer = agent_result.answer
+            logger.info(f"  → Answer generated ({len(answer)} chars)")
+            return ChatResult(
+                session_id=session_id,
+                question=question,
+                answer=answer,
+                sources=chunks,
+                workspace_id=workspace_id,
+            )
+        # Agent found nothing at all — fall through to the friendly message
+        return ChatResult(
+            session_id=session_id,
+            question=question,
+            answer=(
+                "I couldn't find relevant information to answer that. "
+                "Try rephrasing, or add more pages to your knowledge base."
+            ),
+            sources=[],
+            workspace_id=workspace_id,
+        )
+
+    # ── Linear path (agent_enabled=False): original single-shot flow ──
     if workspace_id:
         session_ids = workspace_service.workspace_session_ids(workspace_id)
         if not session_ids:

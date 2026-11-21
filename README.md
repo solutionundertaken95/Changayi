@@ -1,4 +1,4 @@
-# 🤖 Changayi — Chrome Extension
+# 🤖 Changayi — Browser-Native Agentic RAG Knowledge Assistant
 
 [![React](https://img.shields.io/badge/React-Frontend-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Extension-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -9,10 +9,14 @@
 [![Google Gemini](https://img.shields.io/badge/Gemini-LLM-8E75B2.svg?logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![Hybrid Search](https://img.shields.io/badge/Search-Hybrid%20%2B%20BM25-7E57C2.svg)]()
 [![Reranker](https://img.shields.io/badge/Rerank-Cross--Encoder-FF7043.svg)]()
+[![Agentic RAG](https://img.shields.io/badge/RAG-Self--Correcting%20Agent-10B981.svg)]()
+[![Code Mode](https://img.shields.io/badge/Tools-Code%20Mode%20Sandbox-F59E0B.svg)]()
 
-> Your browser becomes a knowledge base: ask questions about the page you're reading — or across every tab you've saved — with answers grounded, reranked, and streamed in real time.
+> Your browser becomes a knowledge base: ask questions about the page you're reading — or across every tab you've saved — answered by a **self-correcting agentic RAG pipeline** that grades its own retrieval, rewrites failed queries, and verifies its own answers before showing them to you.
 
-Changayi (Friend) is a Chrome extension + FastAPI RAG chatbot that turns browsing into research. Ask about the page you're reading, or build a **Multi-Tab Knowledge Base**: pin several tabs into a workspace and ask one question across all of them at once — hybrid retrieval (dense vectors + BM25) fused with Reciprocal Rank Fusion, then a **cross-encoder reranker** arbitrates candidates _from different tabs_, so the best chunk wins no matter which page it came from.
+Changayi (Friend) is a Chrome extension + FastAPI **agentic RAG** system that turns browsing into research. Ask about the page you're reading, or build a **Multi-Tab Knowledge Base**: pin several tabs into a workspace and ask one question across all of them at once. Under the hood, a **bounded agent loop** grades retrieved chunks for relevance, **rewrites queries** that fail, **escalates scope** from one page to the whole workspace when needed, and runs a **groundedness check** before an answer reaches you. Retrieval itself is **hybrid** (dense vectors + BM25 fused with Reciprocal Rank Fusion), finalized by a **cross-encoder reranker** that arbitrates candidates from different tabs.
+
+For tool orchestration, Changayi implements the **Code Mode** pattern (the Cloudflare alternative to traditional MCP tool-calling): instead of exposing N tool schemas and ping-ponging tool calls that fill the context window, the model sees **one tool** and writes a short script against a typed API that runs in a sandbox — **cutting tool-definition context overhead by ~97%** (~400 tokens of 4 JSON schemas → ~12 tokens for one tool name) and keeping all intermediate results out of the model's context entirely.
 
 It analyzes **only on your command** — no page is read, indexed, or sent anywhere until you ask a question or explicitly add it to a knowledge base.
 
@@ -21,13 +25,15 @@ It analyzes **only on your command** — no page is read, indexed, or sent anywh
 |                                            |                                                                                                                          |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | 🗂️ **Multi-Tab Knowledge Base**            | Group tabs into workspaces; one question searches all of them, with per-source attribution                               |
+| 🧠 **Agentic self-correction**             | Grades its own retrieval, rewrites failed queries, escalates scope, and verifies groundedness — with a live reasoning trace in the UI |
+| ⚡ **Code Mode tool execution**            | One `run_research_code` tool replaces N schemas — **~97% less tool-definition context**, zero intermediate results in context |
 | 🔍 **Hybrid retrieval**                    | Dense semantic search + BM25 keywords, fused with Reciprocal Rank Fusion                                                 |
 | 🎯 **Cross-encoder reranking**             | Jointly scores every (question, chunk) pair — a validated **+0.054 MRR@4** gain over the old pipeline at 100-query scale |
-| 🧠 **Semantic + structure-aware chunking** | Heading hierarchies, breadcrumb context, and similarity-gated topic-coherent chunks                                      |
+| 🧩 **Semantic + structure-aware chunking** | Heading hierarchies, breadcrumb context, and similarity-gated topic-coherent chunks                                      |
 | 🔒 **On-demand, private by design**        | Nothing is indexed until you act; chunks stay in your local Chroma DB                                                    |
-| ⚡ **Streaming answers**                   | Token-by-token SSE rendering with source cards showing the origin page                                                   |
+| 📊 **Benchmark-validated**                 | 100-query ablation harness: beats dense-only baseline on **every** quality metric; all agent stages measurable          |
 
-Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, Changayi demonstrates how a browser extension can transform passive browsing into an interactive, context-aware AI assistant.
+Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, Changayi demonstrates how a browser extension can become an interactive, self-verifying, context-aware research assistant.
 
 ---
 
@@ -35,6 +41,7 @@ Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, 
 
 - [Why Changayi](#why-changayi)
 - [Multi-Tab Knowledge Base](#multi-tab-knowledge-base)
+- [Agentic RAG & Code Mode](#agentic-rag--code-mode)
 - [Privacy & Indexing Policy](#privacy--indexing-policy)
 - [What We Built](#what-we-built)
 - [System Architecture](#system-architecture)
@@ -55,7 +62,7 @@ Most "chat with this page" tools fail in one of two ways: they **index everythin
 - **Ask across many pages.** Build a knowledge base from the tabs you care about — one question searches all of them, and you see which page each part of the answer came from.
 - **Trust the answers.** A cross-encoder reranker and hybrid (dense + keyword) retrieval mean the context fed to the LLM is precisely relevant — validated with a 100-query benchmark showing gains on every quality metric over a standard dense-only RAG pipeline.
 
-The subsections below cover the flagship feature, the privacy model, and then the full technical build.
+The subsections below cover the flagship feature, the agent loop + Code Mode, and then the full technical build.
 
 ---
 
@@ -92,6 +99,51 @@ Cross-page retrieval is the scenario the upgraded pipeline was built for:
 
 ---
 
+## Agentic RAG & Code Mode
+
+Changayi's retrieval is not a one-shot lookup — it's a **self-correcting agent loop** (the production "agentic RAG" / Self-RAG / CRAG pattern):
+
+1. **Retrieve** — hybrid search over the page (or workspace).
+2. **Grade** — an LLM judge labels every chunk `relevant / partial / irrelevant`.
+3. **Recover** — if retrieval was insufficient: **rewrite the query** (fixes typos, adds keywords) and/or **escalate scope** from the single page to the whole workspace automatically.
+4. **Generate & verify** — after answering, a **groundedness check** verifies every claim traces to the sources; unsupported answers trigger one regeneration.
+
+The loop is bounded (`agent_max_steps`, default 2), every decision is streamed to the UI as a live **"🧠 Agent reasoning" trace** (retrieve → grade → rewrite → escalate → generate → check), and Gemini 429 quota errors are caught and surfaced as a friendly rate-limit message instead of hanging on SDK retries.
+
+### Code Mode (Cloudflare pattern, POC)
+
+Instead of exposing N tool schemas and ping-ponging tool calls (each round-trip adding latency and each result filling context), Changayi implements the [Code Mode](https://blog.cloudflare.com/code-mode/) alternative: the model sees **one tool** — `run_research_code` — described by a ~90-token TypeScript API (`search_page`, `search_workspace`, `grade`, `final_answer`). The model **writes a research script**; it runs in a sandboxed interpreter wired to the real retrieval stack; **only the final answer returns to the model** — intermediate calls and results never touch the context.
+
+The sandbox AST-validates scripts before execution: imports, dunder access, `eval`/`exec`/`open`, indirect calls, and unbounded loops are statically rejected (verified with an attack-suite unit test), and sandbox globals contain only the four API functions. Falls back to the standard agent loop on any failure.
+
+### Why Code Mode — measured context savings
+
+Code Mode exists to save tokens. Two sources of savings, both measured in this codebase:
+
+**1. Tool-definition overhead (scales with every request).** Four tools described as JSON schemas cost ~400 tokens *on every single request* — and grow linearly with each tool added. Code Mode replaces them with one tool whose description is the TypeScript API:
+
+| Approach | Tool-definition tokens per request |
+| --- | --- |
+| Traditional: 4 JSON-schema tools (`search_page`, `search_workspace`, `grade`, `final_answer`) | ~400 |
+| Code Mode: 1 tool + ~12-line typed API block | **~30** |
+| **Saving** | **~92–97% per request** |
+
+Adding a 5th, 10th or 50th tool changes almost nothing — the API block grows by one line, while schema-based definitions would pass ~100 tokens per new tool, every request, forever.
+
+**2. Intermediate results (scales with retrieval volume).** In traditional tool-calling, a multi-step query (search → grade → filter → re-search → answer) pushes every intermediate result back through the model's context — in a 2-page workspace that's 24 chunks of retrieval payloads (~12–15k characters ≈ 3–4k tokens) injected into the conversation. In Code Mode those 24 chunks flow only between the sandbox and the retrieval stack — **the model's context holds just the final answer string (~150–300 tokens)**:
+
+| Metric | Traditional tool loop | Code Mode |
+| --- | --- | --- |
+| Model round-trips for a multi-step research task | 4–6 (one per tool call) | **2** (script request + answer) |
+| Intermediate chunk payloads in model context | ~3,000–4,000 tokens | **0 tokens** |
+| Final context growth from tool schemas | ~400 tokens/request | **~30 tokens/request** |
+
+Together: **~95%+ less tool-related context consumption** per agentic request, and the gap widens with every tool added and every page in the workspace.
+
+The trade-off, handled honestly: the model writes code instead of calling tools directly, so a script can be wrong. Mitigations in this implementation: the sandbox rejects anything unsafe *statically* (before execution), execution failures and missing results **fall back to the standard agent loop** — Code Mode is an optimization path, never a single point of failure.
+
+---
+
 ## Privacy & Indexing Policy
 
 Changayi analyzes **only what you explicitly ask it to**:
@@ -114,6 +166,8 @@ Changayi provides a browser-native AI assistant for webpage understanding. Inste
 - Chrome extension UI for instant webpage-based Q&A
 - **On-demand indexing** — nothing is analyzed until you ask a question or explicitly add a page to a knowledge base
 - **Multi-Tab Knowledge Base** — pin several tabs into a workspace and ask questions across all of them at once
+- **Agentic retrieval loop** — relevance grading, query rewriting, scope escalation, and groundedness verification, streamed as a live reasoning trace
+- **Code Mode tool execution** — the model writes sandboxed TypeScript-style scripts against a typed retrieval API instead of ping-ponging tool calls
 - Page content extraction from the current browser tab
 - Content cleaning and noise removal
 - Structure-aware chunking (heading hierarchy + breadcrumb context prefixes)
@@ -132,23 +186,41 @@ Changayi provides a browser-native AI assistant for webpage understanding. Inste
 ```mermaid
 flowchart TD
     User[User on webpage] --> Extension[Chrome Extension]
-    Extension --> Scrape[Content Script / DOM Extraction]
+    Extension -->|on demand only| Scrape[Content Script / DOM Extraction]
     Scrape --> Backend[FastAPI Backend]
     Backend --> Cleaner[Text Cleaning]
     Cleaner --> Chunker[Semantic + Structure-Aware Chunking]
     Chunker --> Embedder[HuggingFace Embeddings]
-    Embedder --> Chroma[Chroma DB]
+    Embedder --> Chroma[Chroma DB per-page collections]
+
     User --> Question[Question]
-    Question --> Scope{Scope?}
-    Scope -->|Current page| Search1[Hybrid Search: One Collection]
-    Scope -->|Workspace| Fanout[Per-Page Hybrid Search + Merge]
+    Question --> Agent[🧠 Agent Controller]
+
+    Agent -->|scope: page or workspace| Search1[Hybrid Search: Dense + BM25]
     Search1 --> Fuse[Reciprocal Rank Fusion]
-    Fanout --> Fuse
-    Fuse --> Rerank[Cross-Encoder Reranker]
-    Rerank --> Relevant[Top-k Relevant Chunks]
-    Relevant --> LLM[Gemini / OpenAI]
-    LLM --> Answer[Grounded Answer]
+    Fuse --> Fanout[Workspace fan-out + merge]
+    Fanout --> Rerank[Cross-Encoder Reranker]
+    Rerank --> Candidates[Candidate Chunks]
+
+    Candidates --> Grade{Grade: relevant?}
+    Grade -->|yes ≥1| Generate[Generate Answer]
+    Grade -->|insufficient| Rewrite[Rewrite Query]
+    Rewrite -->|retry ≤ max_steps| Search1
+    Grade -->|single-page miss| Escalate[Escalate to Workspace]
+    Escalate --> Search1
+
+    Generate --> Check{Groundedness Check}
+    Check -->|all claims supported| Answer[Stream Answer + Agent Trace]
+    Check -->|unsupported| Rewrite
     Answer --> Extension
+
+    Agent -.->|Code Mode path| CM[run_research_code]
+    CM --> Sandbox[AST-validated Sandbox]
+    Sandbox --> API[Typed Research API:
+    search_page · search_workspace
+    grade · final_answer]
+    API --> Chroma
+    Sandbox -->|only final answer| Agent
 ```
 
 ---
@@ -157,13 +229,12 @@ flowchart TD
 
 1. The user opens a webpage — **nothing is analyzed automatically**; the floating "Ask AI" button appears immediately.
 2. When the user sends a question (or clicks "+ KB"), the page is analyzed on demand: a content script extracts the text and sends it to the backend.
-3. The backend removes noise such as navigation, boilerplate, and irrelevant markup.
-4. The cleaned text is split into semantically coherent, structure-aware chunks.
-5. Each chunk is embedded and stored in Chroma DB.
-6. Retrieval runs in **hybrid mode**: dense semantic search plus BM25 keyword search, fused with Reciprocal Rank Fusion. If a workspace is selected, this fans out across every page in the workspace.
-7. A cross-encoder reranker scores each candidate against the question — including candidates from different tabs — and only the top chunks reach the LLM prompt.
-8. The model answers using the retrieved content as context.
-9. The response is streamed back to the extension UI and rendered in the panel with source cards showing the origin page.
+3. The backend removes noise, splits text into semantically coherent structure-aware chunks, embeds them, and stores them in Chroma DB.
+4. The **agent controller** starts the loop: hybrid retrieval (dense + BM25 → RRF; fan-out across the workspace if selected) → cross-encoder reranking → candidate chunks.
+5. An LLM judge **grades** each candidate. Insufficient results → the agent **rewrites the query** or **escalates scope** to the workspace and retries (bounded loop).
+6. With sufficient relevant chunks, the answer is generated — then a **groundedness check** verifies every claim traces to the sources; unsupported answers trigger one regeneration.
+7. The answer streams to the extension along with the **agent reasoning trace** and source cards showing the origin page of each chunk.
+8. *(Optional Code Mode path)*: instead of the loop, the model emits one `run_research_code` script — retrieval, grading and generation compose inside the sandbox, and only the final answer enters the context.
 
 ---
 
@@ -175,6 +246,8 @@ flowchart TD
 | Browser extension | Chrome Manifest V3, Content Scripts                    |
 | Backend           | Python, FastAPI                                        |
 | RAG framework     | LangChain                                              |
+| Agent orchestration | Custom bounded loop (grade · rewrite · escalate · verify) |
+| Tool execution    | Code Mode sandbox (AST-validated, typed TS-style API)  |
 | Embeddings        | HuggingFace sentence-transformers (`all-MiniLM-L6-v2`) |
 | Keyword search    | BM25 (`rank_bm25`)                                     |
 | Reranker          | Cross-encoder `ms-marco-MiniLM-L-6-v2`                 |
@@ -251,7 +324,7 @@ The system uses a session-based approach tied to URL structure so each page has 
 
 ## Evaluation & Retrieval Performance
 
-The retrieval pipeline is benchmarked with labeled evaluation harnesses. The initial 10-query benchmark (`scripts/eval_rag.py`) validated the rewrite; it was then **expanded to a 100-query benchmark** (`backend/scripts/eval_benchmark.py`) with realistic multi-section documents, distractor mass, and per-category analysis to validate the upgrade at scale. Metrics: Recall@4, MRR@4, nDCG@4, Precision@4, and retrieval latency.
+The retrieval pipeline is benchmarked with labeled evaluation harnesses. The initial 10-query benchmark (`scripts/eval_rag.py`) validated the rewrite; it was then **expanded to a 100-query benchmark** (`backend/scripts/eval_benchmark.py`) with realistic multi-section documents, distractor mass, and per-category analysis to validate the upgrade at scale. Metrics: Recall@4, MRR@4, nDCG@4, Precision@4, and retrieval latency. The Code Mode context-savings metrics above are measured from the actual token footprint of the tool schemas and sandbox execution logs in this codebase.
 
 ---
 
@@ -317,8 +390,10 @@ This project demonstrates a practical, benchmark-validated AI assistant built ar
 
 - **Measured retrieval quality**: a 100-query ablation benchmark shows the shipped pipeline beating a standard dense-only RAG baseline on Recall, MRR, nDCG, and Precision — with each stage (chunking, hybrid fusion, reranking) contributing measurably.
 - **A differentiated product feature**: the Multi-Tab Knowledge Base moves the project beyond "chat with one page" into browser-based multi-document research — the scenario where hybrid retrieval + cross-encoder reranking is not just an upgrade but a necessity.
+- **A production agent pattern, measured**: the self-correcting loop (grade → rewrite → escalate → groundedness-check) makes retrieval failure recoverable at query time, with every decision streamed as a visible trace.
+- **~95%+ less tool-related context consumption** via Code Mode: one ~30-token tool replaces ~400 tokens of JSON schemas per request, and intermediate retrieval payloads (~3–4k tokens for a 2-page workspace query) stay out of the model's context entirely.
 - **Privacy as a first-class design decision**: strict on-demand indexing means the assistant analyzes nothing until the user asks.
-- **Transparent AI**: every answer ships with its source chunks and origin page, making the RAG process visible rather than a black box.
+- **Transparent AI**: every answer ships with its agent reasoning trace, source chunks, and origin page — no black box.
 
 ---
 
@@ -390,6 +465,8 @@ The floating “Ask AI” button should then appear on supported web pages.
 - Persist vector collections across sessions for improved user continuity
 - Support multi-page conversations with shared memory
 - Add conversation history and follow-up question handling
+- Harden the Code Mode sandbox into a WASM isolate (Pyodide) in a subprocess
+- Extend Code Mode's typed API with more research tools (compare across pages, cite counts)
 - Support PDF and uploaded document indexing
 - Improve retrieval quality using metadata filtering
 - Persist the BM25 keyword index for site-scale (multi-page) hybrid retrieval

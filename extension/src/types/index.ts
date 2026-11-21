@@ -61,6 +61,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   sources?: Source[];    // Only present on assistant messages
+  trace?: { step: string; detail: string }[];  // Agent reasoning steps
 }
 
 export type PageStatus = 'idle' | 'indexing' | 'ready' | 'error';

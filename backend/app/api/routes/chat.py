@@ -104,8 +104,28 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     """
     async def event_generator():
         try:
-            # Step 1: Retrieve relevant chunks.
-            # Single-page mode → rag_service.retrieve (sync ChromaDB).
+            # ── Agentic mode: the bounded self-correcting loop runs the
+            # whole pipeline and emits trace + sources + answer events.
+            from app.config import settings as app_settings
+
+            if app_settings.agent_enabled:
+                from app.services.agent_service import run_agent_stream_events
+
+                for event in run_agent_stream_events(
+                    request.session_id, request.question, request.workspace_id, 4
+                ):
+                    if event["type"] == "chunk":
+                        text = event["text"]
+                    else:
+                        yield f'data: {_json.dumps(event)}' + "\n\n"
+                        continue
+                    # The agent produces a complete answer — stream it in
+                    # small pieces so the UI keeps its typing animation.
+                    for i in range(0, len(text), 24):
+                        yield f'data: {_json.dumps({"type": "chunk", "text": text[i:i + 24]})}' + "\n\n"
+                return
+
+            # ── Linear mode (agent_enabled=False): original flow ── Single-page mode → rag_service.retrieve (sync ChromaDB).
             # Workspace mode → fan-out hybrid search per page collection +
             # cross-encoder rerank of the merged pool.
             if request.workspace_id:

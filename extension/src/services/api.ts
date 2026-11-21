@@ -162,8 +162,18 @@ export async function sendMessage(
 type StreamEvent =
   | { type: 'sources'; sources: Source[] }
   | { type: 'chunk'; text: string }
-  | { type: 'done' }
+  | { type: 'trace'; step: string; detail: string }
+  | { type: 'done'; meta?: AgentMeta }
   | { type: 'error'; message: string };
+
+export interface AgentMeta {
+  steps_used?: number;
+  rewritten_query?: string | null;
+  escalated?: boolean;
+  grounded?: boolean;
+  early_exit?: boolean;
+  code_mode?: boolean;
+}
 
 /**
  * Send a user question to the backend using Server-Sent Events streaming.
@@ -193,6 +203,7 @@ export async function sendMessageStream(
   onSources: (sources: Source[]) => void,
   onDone: () => void,
   onError: (error: Error) => void,
+  onTrace?: (step: string, detail: string) => void,
 ): Promise<void> {
   const url = `${API_BASE_URL}/chat/stream`;
 
@@ -253,6 +264,9 @@ export async function sendMessageStream(
         switch (event.type) {
           case 'sources':
             onSources(event.sources);
+            break;
+          case 'trace':
+            onTrace?.(event.step, event.detail);
             break;
           case 'chunk':
             if (event.text) onChunk(event.text);

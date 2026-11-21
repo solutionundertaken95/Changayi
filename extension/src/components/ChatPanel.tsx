@@ -483,6 +483,46 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, theme }) => {
           )}
         </div>
 
+        {/* Agent reasoning trace (agentic RAG) */}
+        {message.trace && message.trace.length > 0 && (
+          <div style={{
+            margin: '0 0 6px',
+            padding: '8px 10px',
+            borderRadius: 10,
+            background: theme.promptBg,
+            border: `1px solid ${theme.promptBorder}`,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 3,
+          }}>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: '#818cf8',
+            }}>
+              🧠 Agent reasoning
+            </span>
+            {message.trace.map((t, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                <span style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: '#818cf8',
+                  textTransform: 'uppercase',
+                  minWidth: 58,
+                }}>
+                  {t.step}
+                </span>
+                <span style={{ fontSize: 11, color: theme.promptText, lineHeight: 1.4 }}>
+                  {t.detail}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Sources */}
         {message.sources && message.sources.length > 0 && (
           <SourceCards sources={message.sources} theme={theme} />
@@ -714,7 +754,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
     const aiMsgId = crypto.randomUUID();
     setMessages((prev) => [
       ...prev,
-      { id: aiMsgId, role: 'assistant', content: '', timestamp: new Date(), sources: [] },
+      { id: aiMsgId, role: 'assistant', content: '', timestamp: new Date(), sources: [], trace: [] },
     ]);
 
     // 3. Open SSE stream (workspace_id set → cross-tab scope)
@@ -761,6 +801,17 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
           );
           setIsLoading(false);
           setTimeout(() => inputRef.current?.focus(), 100);
+        },
+
+        // onTrace — live agent reasoning steps (agentic RAG)
+        (step, detail) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === aiMsgId
+                ? { ...m, trace: [...(m.trace ?? []), { step, detail }] }
+                : m
+            )
+          );
         },
       );
     } catch (_err) {

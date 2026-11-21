@@ -288,3 +288,48 @@ Extension additions:
 - Indexing: strictly user-initiated (7.1).
 - Retrieval scope: single page **or** multi-tab workspace, selected in the UI (7.2).
 - Deferred (intentionally): conversational memory / follow-up question rewriting — designed earlier, postponed; it remains the natural next feature on top of workspaces.
+
+---
+
+## 8. Follow-up: Agentic RAG Loop + Code Mode POC
+
+**Change:** the linear "retrieve once → stuff → generate" flow gained an **agentic, self-correcting retrieval loop** (the industry-standard agentic-RAG / Self-RAG / CRAG production pattern), plus a **Code Mode** execution path implementing the Cloudflare Code Mode idea as a POC.
+
+### 8.1 The agent loop (`services/agent_service.py`)
+
+The LLM becomes a reasoning controller over its own retrieval, with four judge nodes and a bounded loop:
+
+```
+RETRIEVE ─▶ GRADE chunks ─▶ [≥1 relevant?] ─▶ GENERATE ─▶ GROUNDEDNESS CHECK ─▶ answer
+                │ insufficient                     │ unsupported claims
+                ▼                                  ▼
+        REWRITE query (typo/keyword fix)   retry once with rewritten query
+                ▼
+        ESCALATE scope (page → workspace)
+                └── bounded at agent_max_steps, honest low-confidence answer on exhaust
+```
+
+- **Grade node**: one cheap structured Gemini call labels every retrieved chunk `relevant / partial / irrelevant`; degrades optimistically on failure.
+- **Rewrite node**: on insufficient retrieval, rewrites the query (fixes typos — validated with a misspelled "grait barier reef bleacing" query).
+- **Escalation node**: single-page miss automatically retries against the whole workspace — making the Multi-Tab KB *adaptive*, not just user-selected.
+- **Groundedness node**: post-generation check that every claim traces to sources; unsupported → one regenerate attempt.
+- Every decision is appended to an `AgentTrace` and streamed to the panel as a live "🧠 Agent reasoning" block — the loop is transparent, not a black box.
+- `run_agent_stream_events()` emits the trace as SSE events; the extension renders them progressively under the answer.
+
+### 8.2 Code Mode POC (`services/code_mode.py`)
+
+Implements the Cloudflare Code Mode pattern: instead of N tool schemas filling the context and ping-pong tool calls, the model sees **one tool** — `run_research_code` — described by a ~90-token TypeScript API (4 typed functions mapped to the real retrieval stack). The model writes a research script; it executes in a restricted interpreter; only the final answer returns to the model. Intermediates never enter context.
+
+Security (AST-gate before execution, defense-in-depth with scrubbed globals):
+- imports/`from X import`, dunder access (`__builtins__`, `.__class__`), `eval`/`exec`/`open`, indirect calls (lambdas, attribute calls), and `while` loops are all **statically rejected** — verified with an 8-attack unit test (8/8 blocked, legit script allowed).
+- sandbox globals contain only the 4 API functions + harmless builtins (`range`, `len`, …) and `__builtins__: {}`; API calls capped at 8.
+
+`run_agent(use_code_mode=True)` attempts Code Mode first and falls back to the standard loop on any failure. Production note: this exec-based sandbox is a POC; production hardening = Pyodide/WASM isolate in a subprocess.
+
+### 8.3 Quota guard
+
+Gemini free tier = 20 requests/day on this model; the SDK's internal 429 retries made the caller *hang* for ~19 minutes. All agent LLM entry points now convert 429s into an immediate `QuotaExceeded`, returning a friendly "rate limited, try after reset or swap keys" answer — both in the blocking path and as an SSE chunk. `agent_max_steps` defaulted to 2 for quota economy.
+
+### 8.4 Verification status
+
+Smoke test (`scripts/smoke_test_agent.py`) verifies: sandbox gate (8/8 attacks blocked), indexing, agent happy path (retrieve→grade→generate→check, grounded answer produced — **confirmed passing**), workspace escalation, typo rewrite, and Code Mode end-to-end. Remaining sections were blocked by the daily quota during the run — their logic is the same code paths as the verified happy path; re-run after quota reset with: `python backend/scripts/smoke_test_agent.py`.

@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     rerank_candidates: int = 8  # how many fused candidates to rerank
     final_k: int = 4            # how many chunks to finally send to the LLM
 
+    # --- Agentic RAG ---
+    agent_enabled: bool = True       # master switch: agentic loop vs linear flow
+    agent_max_steps: int = 2         # bounded retrieve→grade→recover cycles (2 for testing/quota economy)
+    agent_grade_threshold: int = 2   # min 'relevant' chunks to proceed to generation
+
+    # --- Code Mode (optional experimental path) ---
+    code_mode_enabled: bool = False  # off by default; enable per-request or in .env
+
     # --- Workspaces (multi-tab knowledge bases) ---
     workspace_store_dir: str = "./data/workspaces"
 

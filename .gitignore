@@ -28,6 +28,8 @@ env/
 # --- ChromaDB data (generated at runtime) ---
 backend/chroma_data/
 backend/chroma_bench/
+chroma_data/
+data/
 
 # --- Node / Frontend ---
 node_modules/

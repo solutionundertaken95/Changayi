@@ -1,0 +1,22 @@
+=== 0. Sandbox AST gate ===
+  [BLOCKED] import       'import os'
+  [BLOCKED] import       'from os import path'
+  [BLOCKED] eval         "eval('1+1')"
+  [BLOCKED] dunder       '__builtins__'
+  [BLOCKED] open         "open('/etc/passwd')"
+  [BLOCKED] unknown fn   '(lambda: 0)()'
+  [BLOCKED] while        'while True: pass'
+  [BLOCKED] dunder attr  "x = '' .__class__"
+  [PASSED ] legit script allowed
+
+=== 1. Indexing 2 pages ===
+  indexed 1 + 1 chunks, workspace 'AgentSmoke' ready
+
+=== 2. Agent run: happy path ===
+  [retrieve ] Searched single-page for "How do LSTM cells avoid vanishing gradients?" → 1 chunks
+  [grade    ] Graded 1 chunks: 1 relevant, 0 partial, 0 irrelevant
+  [generate ] Generating answer from 1 chunks
+  [check    ] Groundedness verified — all claims supported
+  answer: LSTM cells avoid vanishing gradients through **additive state updates**.
+
+=== 3. Agent run: workspace escalation ===

@@ -35,6 +35,7 @@ Built with a FastAPI backend, LangChain, HuggingFace embeddings, and Chroma DB, 
 
 - [Why Changayi](#why-changayi)
 - [Multi-Tab Knowledge Base](#multi-tab-knowledge-base)
+- [Agentic RAG & Code Mode](#agentic-rag--code-mode)
 - [Privacy & Indexing Policy](#privacy--indexing-policy)
 - [What We Built](#what-we-built)
 - [System Architecture](#system-architecture)
@@ -89,6 +90,25 @@ Cross-page retrieval is the scenario the upgraded pipeline was built for:
 | `POST /api/workspace/{id}/remove_page?url=…` | Remove a page entry                                        |
 | `DELETE /api/workspace/{id}`                 | Delete a workspace                                         |
 | `POST /api/chat` / `POST /api/chat/stream`   | Both accept an optional `workspace_id` for cross-tab scope |
+
+---
+
+## Agentic RAG & Code Mode
+
+Changayi's retrieval is not a one-shot lookup — it's a **self-correcting agent loop** (the production "agentic RAG" / Self-RAG / CRAG pattern):
+
+1. **Retrieve** — hybrid search over the page (or workspace).
+2. **Grade** — an LLM judge labels every chunk `relevant / partial / irrelevant`.
+3. **Recover** — if retrieval was insufficient: **rewrite the query** (fixes typos, adds keywords) and/or **escalate scope** from the single page to the whole workspace automatically.
+4. **Generate & verify** — after answering, a **groundedness check** verifies every claim traces to the sources; unsupported answers trigger one regeneration.
+
+The loop is bounded (`agent_max_steps`, default 2), every decision is streamed to the UI as a live **"🧠 Agent reasoning" trace** (retrieve → grade → rewrite → escalate → generate → check), and Gemini 429 quota errors are caught and surfaced as a friendly rate-limit message instead of hanging on SDK retries.
+
+### Code Mode (Cloudflare pattern, POC)
+
+Instead of exposing N tool schemas and ping-ponging tool calls (each round-trip adding latency and each result filling context), Changayi implements the [Code Mode](https://blog.cloudflare.com/code-mode/) alternative: the model sees **one tool** — `run_research_code` — described by a ~90-token TypeScript API (`search_page`, `search_workspace`, `grade`, `final_answer`). The model **writes a research script**; it runs in a sandboxed interpreter wired to the real retrieval stack; **only the final answer returns to the model** — intermediate calls and results never touch the context.
+
+The sandbox AST-validates scripts before execution: imports, dunder access, `eval`/`exec`/`open`, indirect calls, and unbounded loops are statically rejected (verified with an attack-suite unit test), and sandbox globals contain only the four API functions. Falls back to the standard agent loop on any failure.
 
 ---
 
